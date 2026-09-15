@@ -37,6 +37,17 @@ AUDIO_EXTENSIONS = {
     ".mkv",
 }
 
+VOICE_MEMOS_DIR = (
+    Path.home()
+    / "Library"
+    / "Group Containers"
+    / "group.com.apple.VoiceMemos.shared"
+    / "Recordings"
+)
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "output"
+
 MODEL_OPTIONS = [
     ("large-v3-turbo (권장, 빠름)", "mlx-community/whisper-large-v3-turbo"),
     ("large-v3 (최고 정확도, 느림)", "mlx-community/whisper-large-v3-mlx"),
@@ -70,7 +81,9 @@ class MainWindow(QMainWindow):
         self.audio_path: Path | None = None
         self.process: QProcess | None = None
         self.total_duration: float | None = None
-        self.output_dir: Path | None = None
+        self.output_dir: Path | None = DEFAULT_OUTPUT_DIR
+        self._progress_current: float = 0.0
+        self._progress_total: float | None = None
         self._elapsed_timer = QTimer(self)
         self._elapsed_timer.setInterval(1000)
         self._elapsed_timer.timeout.connect(self._tick_elapsed)
@@ -127,6 +140,8 @@ class MainWindow(QMainWindow):
         outdir_layout = QHBoxLayout(outdir_group)
         self.outdir_edit = QLineEdit()
         self.outdir_edit.setReadOnly(True)
+        if self.output_dir is not None:
+            self.outdir_edit.setText(str(self.output_dir))
         outdir_btn = QPushButton("폴더 선택")
         outdir_btn.clicked.connect(self._on_choose_outdir)
         outdir_layout.addWidget(self.outdir_edit)
@@ -187,7 +202,10 @@ class MainWindow(QMainWindow):
 
     def _on_browse(self) -> None:
         filter_str = "오디오/비디오 파일 (*" + " *".join(sorted(AUDIO_EXTENSIONS)) + ")"
-        path_str, _ = QFileDialog.getOpenFileName(self, "강의 녹음 파일 선택", "", filter_str)
+        start_dir = str(VOICE_MEMOS_DIR) if VOICE_MEMOS_DIR.is_dir() else ""
+        path_str, _ = QFileDialog.getOpenFileName(
+            self, "강의 녹음 파일 선택", start_dir, filter_str
+        )
         if path_str:
             self._set_audio_path(Path(path_str))
 
@@ -263,6 +281,8 @@ class MainWindow(QMainWindow):
         self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.open_folder_btn.setEnabled(False)
+        self._progress_current = 0.0
+        self._progress_total = None
         self._start_time = time.monotonic()
         self._elapsed_timer.start()
 
@@ -278,7 +298,15 @@ class MainWindow(QMainWindow):
 
     def _tick_elapsed(self) -> None:
         elapsed = time.monotonic() - self._start_time
-        self.status_label.setText(f"처리 중... (경과 {format_hms(elapsed)})")
+        text = f"처리 중... (경과 {format_hms(elapsed)}"
+        if self._progress_total and self._progress_current > 0 and elapsed > 1:
+            speed = self._progress_current / elapsed  # 오디오 초 / 실제 초
+            remaining_audio = max(0.0, self._progress_total - self._progress_current)
+            if speed > 0:
+                eta = remaining_audio / speed
+                text += f" / 남은 시간 약 {format_hms(eta)} / {speed:.1f}배속"
+        text += ")"
+        self.status_label.setText(text)
 
     def _on_stdout(self) -> None:
         if self.process is None:
@@ -315,6 +343,8 @@ class MainWindow(QMainWindow):
         elif msg_type == "progress":
             current = obj.get("current", 0)
             total = obj.get("total") or self.total_duration
+            self._progress_current = current
+            self._progress_total = total
             if total:
                 pct = max(0, min(100, int(current / total * 100)))
                 self.progress_bar.setValue(pct)
