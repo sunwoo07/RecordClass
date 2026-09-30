@@ -25,7 +25,7 @@ MODEL_CACHE = Path.home() / ".cache/huggingface/hub/models--mlx-community--whisp
     "Apple Silicon, mlx-whisper, 캐시된 small 모델 필요",
 )
 class WorkerE2ETest(unittest.TestCase):
-    def test_transcribe_sample_all_formats(self):
+    def test_transcribe_sample_all_formats(self) -> None:
         with tempfile.TemporaryDirectory() as out:
             proc = subprocess.run(
                 [sys.executable, str(WORKER), "--audio", str(SAMPLE), "--model", MODEL,
@@ -55,7 +55,7 @@ class WorkerE2ETest(unittest.TestCase):
             self.assertRegex(srt, r"^1\n00:00:\d\d,\d{3} --> ")
             self.assertTrue(vtt.startswith("WEBVTT\n\n"))
 
-    def test_missing_audio_reports_error(self):
+    def test_missing_audio_reports_error(self) -> None:
         with tempfile.TemporaryDirectory() as out:
             proc = subprocess.run(
                 [sys.executable, str(WORKER), "--audio", str(Path(out, "nope.mp3")),

@@ -10,15 +10,15 @@ from sttgui.settings import DEFAULT_FORMATS, Settings, SettingsDialog
 
 
 class SettingsTest(unittest.TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         qt_app()
         clear_settings()
 
-    def test_defaults_when_empty(self):
+    def test_defaults_when_empty(self) -> None:
         self.assertEqual(Settings.load(), Settings())
         self.assertEqual(Settings().formats, DEFAULT_FORMATS)
 
-    def test_round_trip_all_fields(self):
+    def test_round_trip_all_fields(self) -> None:
         s = Settings(
             model="mlx-community/whisper-small-mlx",
             language="en",
@@ -33,7 +33,7 @@ class SettingsTest(unittest.TestCase):
         s.save()
         self.assertEqual(Settings.load(), s)
 
-    def test_bad_values_fall_back_to_default(self):
+    def test_bad_values_fall_back_to_default(self) -> None:
         qs = QSettings()
         qs.setValue("paragraph_gap", "not-a-number")
         qs.setValue("dedupe", "false")  # 문자열로 저장된 bool
@@ -42,7 +42,7 @@ class SettingsTest(unittest.TestCase):
         self.assertIsInstance(loaded.paragraph_gap, float)
         self.assertIs(loaded.dedupe, False)
 
-    def test_summary(self):
+    def test_summary(self) -> None:
         text = Settings(formats=["txt", "md"]).summary()
         self.assertIn("large-v3-turbo", text)
         self.assertIn("TXT, MD", text)
@@ -50,14 +50,14 @@ class SettingsTest(unittest.TestCase):
 
 
 class SettingsDialogTest(unittest.TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         qt_app()
 
-    def test_dialog_reflects_and_returns_settings(self):
+    def test_dialog_reflects_and_returns_settings(self) -> None:
         s = Settings(language="en", formats=["srt", "md"], initial_prompt="용어", paragraph_gap=4.0)
         self.assertEqual(SettingsDialog(s).settings(), s)
 
-    def test_dialog_edits(self):
+    def test_dialog_edits(self) -> None:
         dlg = SettingsDialog(Settings())
         dlg.dedupe_check.setChecked(False)
         dlg.format_checks["md"].setChecked(True)
@@ -67,7 +67,7 @@ class SettingsDialogTest(unittest.TestCase):
         self.assertIn("md", out.formats)
         self.assertEqual(out.paragraph_gap, 1.5)
 
-    def test_accept_refuses_no_format(self):
+    def test_accept_refuses_no_format(self) -> None:
         dlg = SettingsDialog(Settings())
         for check in dlg.format_checks.values():
             check.setChecked(False)

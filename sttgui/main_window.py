@@ -380,7 +380,7 @@ class MainWindow(QMainWindow):
             for f in obj.get("output_files", []):
                 self._log(f"저장됨: {f}")
 
-    def _on_finished(self, exit_code: int, exit_status) -> None:
+    def _on_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
         self._elapsed_timer.stop()
         item, self.current_item = self.current_item, None
         if item is None:
@@ -413,7 +413,7 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.information(self, "완료", f"대기 큐의 전사가 모두 완료되었습니다. ({done}개)")
 
-    def _on_process_error(self, error) -> None:
+    def _on_process_error(self, error: QProcess.ProcessError) -> None:
         self._log("[오류] 프로세스를 실행할 수 없습니다.")
         # 시작 자체가 실패하면 finished 시그널이 오지 않으므로 직접 다음으로 넘긴다
         if error == QProcess.FailedToStart:

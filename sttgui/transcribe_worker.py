@@ -23,11 +23,15 @@ import subprocess
 import sys
 import traceback
 from pathlib import Path
+from typing import Any, Callable, TextIO
+
+# mlx_whisper 결과 세그먼트 (start/end/text 외에 id, tokens 등 여러 키가 있음)
+Segment = dict[str, Any]
 
 TIMESTAMP_RE = re.compile(r"^\[([\d:.]+)\s*-->\s*([\d:.]+)\]\s?(.*)$")
 
 
-def emit(stream, obj: dict) -> None:
+def emit(stream: TextIO, obj: dict[str, Any]) -> None:
     stream.write(json.dumps(obj, ensure_ascii=False) + "\n")
     stream.flush()
 
@@ -84,7 +88,7 @@ def get_duration_seconds(path: str) -> float | None:
 class VerboseLineCapture(io.TextIOBase):
     """mlx_whisper의 verbose print()를 가로채 콜백으로 라인 단위 전달."""
 
-    def __init__(self, on_line):
+    def __init__(self, on_line: Callable[[str], None]) -> None:
         super().__init__()
         self._on_line = on_line
         self._buf = ""
@@ -101,7 +105,7 @@ class VerboseLineCapture(io.TextIOBase):
         pass
 
 
-def group_paragraphs(segments, gap: float) -> list[tuple[float, str]]:
+def group_paragraphs(segments: list[Segment], gap: float) -> list[tuple[float, str]]:
     """세그먼트 사이 무음(next.start - prev.end)이 gap초 이상이면 문단을 나눈다.
 
     출력 형식과 무관하게 [(문단 시작 시각, 공백으로 이은 텍스트), ...]를 돌려준다.
@@ -120,7 +124,7 @@ def group_paragraphs(segments, gap: float) -> list[tuple[float, str]]:
     return [(start, " ".join(texts)) for start, texts in paragraphs]
 
 
-def write_txt(segments, path: Path, gap: float = 2.0, timestamps: bool = True) -> None:
+def write_txt(segments: list[Segment], path: Path, gap: float = 2.0, timestamps: bool = True) -> None:
     paragraphs = group_paragraphs(segments, gap)
     with open(path, "w", encoding="utf-8") as f:
         f.write(
@@ -132,7 +136,7 @@ def write_txt(segments, path: Path, gap: float = 2.0, timestamps: bool = True) -
         )
 
 
-def write_md(segments, path: Path, gap: float = 2.0) -> None:
+def write_md(segments: list[Segment], path: Path, gap: float = 2.0) -> None:
     # 제목은 출력 파일명(= 오디오 파일명)에서, 문단마다 ## HH:MM:SS 제목을 붙인다
     with open(path, "w", encoding="utf-8") as f:
         f.write(f"# {path.stem}\n\n")
@@ -140,7 +144,7 @@ def write_md(segments, path: Path, gap: float = 2.0) -> None:
             f.write(f"## {format_hms_timestamp(start)}\n\n{text}\n\n")
 
 
-def write_srt(segments, path: Path) -> None:
+def write_srt(segments: list[Segment], path: Path) -> None:
     with open(path, "w", encoding="utf-8") as f:
         for i, seg in enumerate(segments, start=1):
             f.write(f"{i}\n")
@@ -150,7 +154,7 @@ def write_srt(segments, path: Path) -> None:
             f.write(seg["text"].strip() + "\n\n")
 
 
-def write_vtt(segments, path: Path) -> None:
+def write_vtt(segments: list[Segment], path: Path) -> None:
     with open(path, "w", encoding="utf-8") as f:
         f.write("WEBVTT\n\n")
         for seg in segments:
@@ -160,14 +164,14 @@ def write_vtt(segments, path: Path) -> None:
             f.write(seg["text"].strip() + "\n\n")
 
 
-def dedupe_segments(segments) -> list:
+def dedupe_segments(segments: list[Segment]) -> list[Segment]:
     """연속으로 반복된 세그먼트(정규화한 텍스트가 같음)를 첫 세그먼트로 합친다.
 
     Whisper가 긴 녹음에서 같은 문장을 반복 출력하는 환각을 줄이기 위한 후처리.
     남긴 세그먼트의 end를 마지막 중복의 end로 늘려 타임스탬프가 끊기지 않게 하고,
     빈 텍스트 세그먼트는 버린다. 떨어져서 다시 나온 문장은 그대로 둔다.
     """
-    kept: list = []
+    kept: list[Segment] = []
     prev_key = None
     for seg in segments:
         key = " ".join(seg["text"].split()).lower()
