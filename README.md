@@ -69,3 +69,11 @@ python -m sttgui.main
 
 - **`ffmpeg` 관련 오류** → `brew install ffmpeg` 후 터미널을 다시 열어 실행
 - **`mlx` 설치 실패** → Apple Silicon용 네이티브 Python인지 확인: `python3 -c "import platform; print(platform.machine())"` 결과가 `arm64`여야 합니다
+
+## 테스트
+
+```bash
+python -m unittest        # uv 사용 시: uv run python -m unittest
+```
+
+샘플 녹음을 실제로 전사하는 테스트(`tests/test_e2e.py`)는 small 모델(`mlx-community/whisper-small-mlx`)이 캐시에 있을 때만 실행되고, 없으면 건너뜁니다.
