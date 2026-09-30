@@ -7,14 +7,12 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, Qt, QTimer
-from PySide6.QtGui import QDragEnterEvent, QDropEvent
+from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QKeySequence
 from PySide6.QtWidgets import (
-    QComboBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -25,6 +23,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from sttgui.settings import Settings, SettingsDialog
 
 AUDIO_EXTENSIONS = {
     ".mp3",
@@ -46,22 +46,6 @@ VOICE_MEMOS_DIR = (
     / "group.com.apple.VoiceMemos.shared"
     / "Recordings"
 )
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "output"
-
-MODEL_OPTIONS = [
-    ("large-v3-turbo (권장, 빠름)", "mlx-community/whisper-large-v3-turbo"),
-    ("large-v3 (최고 정확도, 느림)", "mlx-community/whisper-large-v3-mlx"),
-    ("medium (중간)", "mlx-community/whisper-medium-mlx"),
-    ("small (가장 빠름, 정확도 낮음)", "mlx-community/whisper-small-mlx"),
-]
-
-LANGUAGE_OPTIONS = [
-    ("한국어", "ko"),
-    ("자동 감지", "auto"),
-    ("영어", "en"),
-]
 
 
 PATH_ROLE = Qt.UserRole
@@ -89,7 +73,8 @@ class MainWindow(QMainWindow):
         self._cancelled = False
         self.process: QProcess | None = None
         self.total_duration: float | None = None
-        self.output_dir: Path | None = DEFAULT_OUTPUT_DIR
+        self.settings = Settings.load()
+        self.output_dir: Path | None = None  # 마지막으로 사용한 저장 폴더 (결과 폴더 열기용)
         self._progress_current: float = 0.0
         self._progress_total: float | None = None
         self._elapsed_timer = QTimer(self)
@@ -98,6 +83,7 @@ class MainWindow(QMainWindow):
         self._start_time: float = 0.0
 
         self._build_ui()
+        self._build_menu()
 
     # ---------- UI ----------
     def _build_ui(self) -> None:
@@ -124,45 +110,11 @@ class MainWindow(QMainWindow):
         file_layout.addLayout(file_btn_layout)
         layout.addWidget(file_group)
 
-        # 옵션
-        options_group = QGroupBox("2. 옵션")
-        options_layout = QHBoxLayout(options_group)
-
-        options_layout.addWidget(QLabel("모델:"))
-        self.model_combo = QComboBox()
-        for label, _ in MODEL_OPTIONS:
-            self.model_combo.addItem(label)
-        options_layout.addWidget(self.model_combo)
-
-        options_layout.addWidget(QLabel("언어:"))
-        self.lang_combo = QComboBox()
-        for label, _ in LANGUAGE_OPTIONS:
-            self.lang_combo.addItem(label)
-        options_layout.addWidget(self.lang_combo)
-
-        options_layout.addWidget(QLabel("출력 형식:"))
-        self.txt_check = QPushButton("TXT")
-        self.srt_check = QPushButton("SRT")
-        self.vtt_check = QPushButton("VTT")
-        for btn in (self.txt_check, self.srt_check, self.vtt_check):
-            btn.setCheckable(True)
-            btn.setChecked(True)
-            options_layout.addWidget(btn)
-
-        layout.addWidget(options_group)
-
-        # 출력 폴더
-        outdir_group = QGroupBox("3. 저장 위치")
-        outdir_layout = QHBoxLayout(outdir_group)
-        self.outdir_edit = QLineEdit()
-        self.outdir_edit.setReadOnly(True)
-        if self.output_dir is not None:
-            self.outdir_edit.setText(str(self.output_dir))
-        outdir_btn = QPushButton("폴더 선택")
-        outdir_btn.clicked.connect(self._on_choose_outdir)
-        outdir_layout.addWidget(self.outdir_edit)
-        outdir_layout.addWidget(outdir_btn)
-        layout.addWidget(outdir_group)
+        # 현재 설정 요약 (변경은 환경설정 창에서)
+        self.settings_label = QLabel(self.settings.summary())
+        self.settings_label.setWordWrap(True)
+        self.settings_label.setStyleSheet("color: gray;")
+        layout.addWidget(self.settings_label)
 
         # 컨트롤
         control_layout = QHBoxLayout()
@@ -200,6 +152,22 @@ class MainWindow(QMainWindow):
         layout.addLayout(result_layout)
 
         self.setCentralWidget(central)
+
+    def _build_menu(self) -> None:
+        # macOS에서는 PreferencesRole 덕분에 앱 메뉴의 '환경설정…'(⌘,)으로 이동한다
+        prefs_action = QAction("환경설정…", self)
+        prefs_action.setShortcut(QKeySequence.Preferences)
+        prefs_action.setMenuRole(QAction.PreferencesRole)
+        prefs_action.triggered.connect(self._on_preferences)
+        self.menuBar().addMenu("설정").addAction(prefs_action)
+
+    def _on_preferences(self) -> None:
+        dialog = SettingsDialog(self.settings, self)
+        if dialog.exec() == SettingsDialog.Accepted:
+            # 진행 중인 파일에는 영향 없음 — 다음 파일부터 반영
+            self.settings = dialog.settings()
+            self.settings.save()
+            self.settings_label.setText(self.settings.summary())
 
     # ---------- 파일 선택 / 드래그앤드롭 ----------
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
@@ -254,9 +222,6 @@ class MainWindow(QMainWindow):
             item.setToolTip(str(path))
             self._set_status(item, "pending")
             self.queue_list.addItem(item)
-        if paths and not self.outdir_edit.text():
-            self.output_dir = paths[0].parent
-            self.outdir_edit.setText(str(self.output_dir))
         self._update_start_btn()
 
     def _on_remove_selected(self) -> None:
@@ -270,28 +235,8 @@ class MainWindow(QMainWindow):
             if item.data(STATUS_ROLE) in ("done", "failed"):
                 self.queue_list.takeItem(self.queue_list.row(item))
 
-    def _on_choose_outdir(self) -> None:
-        start_dir = str(self.output_dir) if self.output_dir else str(Path.home())
-        dir_str = QFileDialog.getExistingDirectory(self, "저장 폴더 선택", start_dir)
-        if dir_str:
-            self.output_dir = Path(dir_str)
-            self.outdir_edit.setText(dir_str)
-
     # ---------- 전사 실행 ----------
-    def _selected_formats(self) -> list[str]:
-        formats = []
-        if self.txt_check.isChecked():
-            formats.append("txt")
-        if self.srt_check.isChecked():
-            formats.append("srt")
-        if self.vtt_check.isChecked():
-            formats.append("vtt")
-        return formats
-
     def _on_start(self) -> None:
-        if not self._selected_formats():
-            QMessageBox.warning(self, "출력 형식 없음", "최소 하나의 출력 형식을 선택하세요.")
-            return
         self._cancelled = False
         self.log_view.clear()
         self.cancel_btn.setEnabled(True)
@@ -308,12 +253,12 @@ class MainWindow(QMainWindow):
             return
 
         audio_path: Path = item.data(PATH_ROLE)
-        if self.output_dir is None:
-            self.output_dir = audio_path.parent
-        # 옵션은 파일마다 현재 값을 읽는다 (큐 진행 중 변경 시 다음 파일부터 반영)
-        formats = self._selected_formats() or ["txt"]
-        model_repo = MODEL_OPTIONS[self.model_combo.currentIndex()][1]
-        language = LANGUAGE_OPTIONS[self.lang_combo.currentIndex()][1]
+        # 설정은 파일마다 현재 값을 읽는다 (큐 진행 중 변경 시 다음 파일부터 반영)
+        settings = self.settings
+        self.output_dir = Path(settings.output_dir) if settings.output_dir else audio_path.parent
+        formats = settings.formats or ["txt"]
+        model_repo = settings.model
+        language = settings.language
 
         self.current_item = item
         self._set_status(item, "running")
@@ -342,7 +287,13 @@ class MainWindow(QMainWindow):
                 str(self.output_dir),
                 "--formats",
                 ",".join(formats),
+                # '=' 형식: 값이 '-'로 시작해도 argparse가 옵션으로 오인하지 않게
+                f"--initial-prompt={settings.initial_prompt.strip()}",
             ]
+            + (["--no-condition-prev"] if settings.no_condition_prev else [])
+            + (["--dedupe"] if settings.dedupe else [])
+            + [f"--paragraph-gap={settings.paragraph_gap}"]
+            + ([] if settings.txt_timestamps else ["--no-txt-timestamps"])
         )
         self.process.readyReadStandardOutput.connect(self._on_stdout)
         self.process.readyReadStandardError.connect(self._on_stderr)
