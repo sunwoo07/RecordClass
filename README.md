@@ -1,44 +1,69 @@
 # RecordClass — 강의 녹음 STT 도구
 
-`mlx-whisper`를 이용해 60~90분 분량의 강의 녹음을 텍스트로 변환하는 macOS(Apple Silicon) 전용 데스크톱 GUI 도구입니다.
+[mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper)로 60~90분 분량의 강의 녹음을
+텍스트(TXT/SRT/VTT)로 변환하는 **macOS(Apple Silicon) 전용** 데스크톱 GUI 도구입니다.
 
-PySide6로 만든 네이티브 GUI이며, 실제 전사 작업은 별도 프로세스에서 실행되어 진행률을
-실시간 스트리밍하고 언제든 취소할 수 있습니다.
+- 모든 처리는 로컬에서 수행 — 녹음 파일이 외부로 전송되지 않습니다
+- 여러 파일을 대기 큐에 넣고 순서대로 일괄 전사
+- 진행률·실시간 자막 미리보기, 언제든 취소 가능
 
 ## 요구 사항
 
-- Apple Silicon Mac (M1 이상)
-- macOS + Homebrew의 `ffmpeg` (`brew install ffmpeg`)
-- [uv](https://docs.astral.sh/uv/) (`brew install uv`)
+- Apple Silicon Mac (M1 이상) — Intel Mac, Windows, Linux는 지원하지 않습니다
+- Python 3.10 이상
+- `ffmpeg` (`brew install ffmpeg`)
 
-## 설치
+## 설치 및 실행
 
 ```bash
-uv sync
+git clone https://github.com/sunwoo07/RecordClass.git
+cd RecordClass
 ```
 
-## 실행
+### 방법 A: uv 사용 (권장)
 
 ```bash
+brew install uv
+uv sync
 uv run python -m sttgui.main
 ```
 
+### 방법 B: pip 사용 (uv 없이)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m sttgui.main
+```
+
+다음부터는 `source .venv/bin/activate && python -m sttgui.main`만 실행하면 됩니다.
+
 ## 사용법
 
-1. 강의 녹음 파일을 드래그하거나 "찾아보기"로 선택 (mp3, wav, m4a, mp4, aac, flac, ogg, mov 등 지원)
-2. 모델/언어/출력 형식(TXT, SRT, VTT)을 선택
-3. 저장 위치를 지정 (기본값: 원본 파일과 같은 폴더)
-4. "전사 시작" 클릭 — 진행률과 실시간 자막 미리보기가 표시됨
-5. 완료 후 "결과 폴더 열기"로 바로 확인
+1. 강의 녹음 파일을 창에 드래그하거나 "파일 추가"로 선택 (여러 개 가능)
+   - 지원 형식: mp3, wav, m4a, mp4, aac, flac, ogg, mov 등
+2. 모델 / 언어(한국어·영어·자동 감지) / 출력 형식(TXT, SRT, VTT) 선택
+3. 저장 위치 지정 (기본값: 프로젝트의 `output/` 폴더)
+4. "전사 시작" 클릭 — 큐의 파일이 순서대로 처리됩니다
+5. 완료 후 "결과 폴더 열기"로 확인
 
-첫 실행 시 선택한 모델을 Hugging Face에서 자동 다운로드하므로 인터넷 연결과
-약간의 시간이 필요합니다(이후에는 로컬 캐시 사용).
+동작을 먼저 확인하고 싶다면 `samples/lecture_sample.mp3`로 테스트해 보세요.
+
+> 첫 실행 시 선택한 모델을 Hugging Face에서 자동 다운로드합니다(수백 MB~3GB).
+> 인터넷 연결이 필요하며, 이후에는 로컬 캐시(`~/.cache/huggingface`)를 사용합니다.
 
 ## 모델 선택 기준
 
-- **large-v3-turbo (기본값)**: 속도와 정확도의 균형이 가장 좋음, 강의 녹음에 권장
-- **large-v3**: 정확도가 가장 높지만 처리 시간이 김
-- **medium / small**: 더 빠르지만 정확도는 낮아짐 (배경 소음이 적고 발음이 명확한 경우 적합)
+| 모델 | 특징 |
+|------|------|
+| **large-v3-turbo** (기본값) | 속도와 정확도의 균형이 가장 좋음, 강의 녹음에 권장 |
+| large-v3 | 정확도가 가장 높지만 처리 시간이 김 |
+| medium / small | 더 빠르지만 정확도는 낮음 (소음이 적고 발음이 명확한 경우) |
 
-60~90분 분량 기준, M1/M2 계열에서 large-v3-turbo는 대략 실제 길이의 10~20% 수준의
-시간이 소요됩니다(하드웨어에 따라 다름).
+60~90분 녹음 기준, M1/M2에서 large-v3-turbo는 대략 실제 길이의 10~20% 시간이 걸립니다(하드웨어에 따라 다름).
+
+## 문제 해결
+
+- **`ffmpeg` 관련 오류** → `brew install ffmpeg` 후 터미널을 다시 열어 실행
+- **`mlx` 설치 실패** → Apple Silicon용 네이티브 Python인지 확인: `python3 -c "import platform; print(platform.machine())"` 결과가 `arm64`여야 합니다

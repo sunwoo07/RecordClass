@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -62,6 +64,11 @@ LANGUAGE_OPTIONS = [
 ]
 
 
+PATH_ROLE = Qt.UserRole
+STATUS_ROLE = Qt.UserRole + 1
+STATUS_PREFIX = {"pending": "대기", "running": "진행", "done": "완료", "failed": "실패"}
+
+
 def format_hms(seconds: float) -> str:
     seconds = int(seconds)
     h, rem = divmod(seconds, 3600)
@@ -78,7 +85,8 @@ class MainWindow(QMainWindow):
         self.resize(760, 620)
         self.setAcceptDrops(True)
 
-        self.audio_path: Path | None = None
+        self.current_item: QListWidgetItem | None = None
+        self._cancelled = False
         self.process: QProcess | None = None
         self.total_duration: float | None = None
         self.output_dir: Path | None = DEFAULT_OUTPUT_DIR
@@ -97,15 +105,23 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(central)
 
         # 파일 선택
-        file_group = QGroupBox("1. 강의 녹음 파일")
+        file_group = QGroupBox("1. 강의 녹음 파일 (대기 큐 — 드래그하거나 '파일 추가')")
         file_layout = QHBoxLayout(file_group)
-        self.file_edit = QLineEdit()
-        self.file_edit.setReadOnly(True)
-        self.file_edit.setPlaceholderText("파일을 드래그하거나 '찾아보기'를 클릭하세요")
-        browse_btn = QPushButton("찾아보기")
+        self.queue_list = QListWidget()
+        self.queue_list.setSelectionMode(QListWidget.ExtendedSelection)
+        self.queue_list.setMaximumHeight(120)
+        file_btn_layout = QVBoxLayout()
+        browse_btn = QPushButton("파일 추가")
         browse_btn.clicked.connect(self._on_browse)
-        file_layout.addWidget(self.file_edit)
-        file_layout.addWidget(browse_btn)
+        remove_btn = QPushButton("선택 삭제")
+        remove_btn.clicked.connect(self._on_remove_selected)
+        clear_done_btn = QPushButton("완료 항목 정리")
+        clear_done_btn.clicked.connect(self._on_clear_finished)
+        for btn in (browse_btn, remove_btn, clear_done_btn):
+            file_btn_layout.addWidget(btn)
+        file_btn_layout.addStretch()
+        file_layout.addWidget(self.queue_list, stretch=1)
+        file_layout.addLayout(file_btn_layout)
         layout.addWidget(file_group)
 
         # 옵션
@@ -191,31 +207,68 @@ class MainWindow(QMainWindow):
             event.acceptProposedAction()
 
     def dropEvent(self, event: QDropEvent) -> None:
-        urls = event.mimeData().urls()
-        if not urls:
-            return
-        path = Path(urls[0].toLocalFile())
-        if path.suffix.lower() not in AUDIO_EXTENSIONS:
-            QMessageBox.warning(self, "지원하지 않는 형식", f"{path.suffix} 형식은 지원하지 않습니다.")
-            return
-        self._set_audio_path(path)
+        paths = [Path(u.toLocalFile()) for u in event.mimeData().urls()]
+        unsupported = [p.name for p in paths if p.suffix.lower() not in AUDIO_EXTENSIONS]
+        if unsupported:
+            QMessageBox.warning(
+                self, "지원하지 않는 형식", "다음 파일은 제외됩니다:\n" + "\n".join(unsupported)
+            )
+        self._add_files([p for p in paths if p.suffix.lower() in AUDIO_EXTENSIONS])
 
     def _on_browse(self) -> None:
         filter_str = "오디오/비디오 파일 (*" + " *".join(sorted(AUDIO_EXTENSIONS)) + ")"
         start_dir = str(VOICE_MEMOS_DIR) if VOICE_MEMOS_DIR.is_dir() else ""
-        path_str, _ = QFileDialog.getOpenFileName(
+        path_strs, _ = QFileDialog.getOpenFileNames(
             self, "강의 녹음 파일 선택", start_dir, filter_str
         )
-        if path_str:
-            self._set_audio_path(Path(path_str))
+        self._add_files([Path(p) for p in path_strs])
 
-    def _set_audio_path(self, path: Path) -> None:
-        self.audio_path = path
-        self.file_edit.setText(str(path))
-        if not self.outdir_edit.text():
-            self.output_dir = path.parent
+    # ---------- 대기 큐 ----------
+    def _queue_items(self) -> list[QListWidgetItem]:
+        return [self.queue_list.item(i) for i in range(self.queue_list.count())]
+
+    def _set_status(self, item: QListWidgetItem, status: str) -> None:
+        item.setData(STATUS_ROLE, status)
+        item.setText(f"[{STATUS_PREFIX[status]}] {item.data(PATH_ROLE).name}")
+
+    def _is_running(self) -> bool:
+        return self.current_item is not None
+
+    def _update_start_btn(self) -> None:
+        has_pending = any(i.data(STATUS_ROLE) == "pending" for i in self._queue_items())
+        self.start_btn.setEnabled(has_pending and not self._is_running())
+
+    def _add_files(self, paths: list[Path]) -> None:
+        # 이미 큐에 있고 아직 처리 전/진행 중인 파일은 중복 추가하지 않는다
+        active = {
+            i.data(PATH_ROLE)
+            for i in self._queue_items()
+            if i.data(STATUS_ROLE) in ("pending", "running")
+        }
+        for path in paths:
+            if path in active:
+                continue
+            active.add(path)
+            item = QListWidgetItem()
+            item.setData(PATH_ROLE, path)
+            item.setToolTip(str(path))
+            self._set_status(item, "pending")
+            self.queue_list.addItem(item)
+        if paths and not self.outdir_edit.text():
+            self.output_dir = paths[0].parent
             self.outdir_edit.setText(str(self.output_dir))
-        self.start_btn.setEnabled(True)
+        self._update_start_btn()
+
+    def _on_remove_selected(self) -> None:
+        for item in self.queue_list.selectedItems():
+            if item is not self.current_item:
+                self.queue_list.takeItem(self.queue_list.row(item))
+        self._update_start_btn()
+
+    def _on_clear_finished(self) -> None:
+        for item in self._queue_items():
+            if item.data(STATUS_ROLE) in ("done", "failed"):
+                self.queue_list.takeItem(self.queue_list.row(item))
 
     def _on_choose_outdir(self) -> None:
         start_dir = str(self.output_dir) if self.output_dir else str(Path.home())
@@ -236,23 +289,41 @@ class MainWindow(QMainWindow):
         return formats
 
     def _on_start(self) -> None:
-        if self.audio_path is None:
-            return
-        formats = self._selected_formats()
-        if not formats:
+        if not self._selected_formats():
             QMessageBox.warning(self, "출력 형식 없음", "최소 하나의 출력 형식을 선택하세요.")
             return
-        if self.output_dir is None:
-            self.output_dir = self.audio_path.parent
+        self._cancelled = False
+        self.log_view.clear()
+        self.cancel_btn.setEnabled(True)
+        self.open_folder_btn.setEnabled(False)
+        self._start_next()
 
+    def _start_next(self) -> None:
+        """큐에서 다음 대기 항목을 꺼내 실행. 없으면 전체 종료 처리."""
+        item = next(
+            (i for i in self._queue_items() if i.data(STATUS_ROLE) == "pending"), None
+        )
+        if item is None:
+            self._finish_queue()
+            return
+
+        audio_path: Path = item.data(PATH_ROLE)
+        if self.output_dir is None:
+            self.output_dir = audio_path.parent
+        # 옵션은 파일마다 현재 값을 읽는다 (큐 진행 중 변경 시 다음 파일부터 반영)
+        formats = self._selected_formats() or ["txt"]
         model_repo = MODEL_OPTIONS[self.model_combo.currentIndex()][1]
         language = LANGUAGE_OPTIONS[self.lang_combo.currentIndex()][1]
 
-        self.log_view.clear()
+        self.current_item = item
+        self._set_status(item, "running")
+        self.queue_list.scrollToItem(item)
         self.progress_bar.setValue(0)
         self.total_duration = None
-        self.status_label.setText("모델 로딩 중... (최초 실행 시 다운로드로 시간이 걸릴 수 있습니다)")
-        self._log(f"파일: {self.audio_path}")
+        self.status_label.setText(
+            f"{self._queue_position()}모델 로딩 중... (최초 실행 시 다운로드로 시간이 걸릴 수 있습니다)"
+        )
+        self._log(f"\n===== {self._queue_position()}파일: {audio_path}")
         self._log(f"모델: {model_repo} / 언어: {language} / 형식: {', '.join(formats)}")
 
         worker_script = str(Path(__file__).parent / "transcribe_worker.py")
@@ -262,7 +333,7 @@ class MainWindow(QMainWindow):
             [
                 worker_script,
                 "--audio",
-                str(self.audio_path),
+                str(audio_path),
                 "--model",
                 model_repo,
                 "--language",
@@ -279,8 +350,6 @@ class MainWindow(QMainWindow):
         self.process.errorOccurred.connect(self._on_process_error)
 
         self.start_btn.setEnabled(False)
-        self.cancel_btn.setEnabled(True)
-        self.open_folder_btn.setEnabled(False)
         self._progress_current = 0.0
         self._progress_total = None
         self._start_time = time.monotonic()
@@ -289,16 +358,20 @@ class MainWindow(QMainWindow):
         self.process.start()
 
     def _on_cancel(self) -> None:
+        # 현재 파일은 중단 후 '대기'로 되돌리고, 나머지 큐는 그대로 둔다
+        self._cancelled = True
         if self.process is not None and self.process.state() != QProcess.NotRunning:
-            self.process.kill()
-        self.status_label.setText("취소됨")
-        self._elapsed_timer.stop()
-        self.start_btn.setEnabled(True)
-        self.cancel_btn.setEnabled(False)
+            self.process.kill()  # -> _on_finished 에서 정리
+
+    def _queue_position(self) -> str:
+        if self.current_item is None:
+            return ""
+        row = self.queue_list.row(self.current_item) + 1
+        return f"[{row}/{self.queue_list.count()}] "
 
     def _tick_elapsed(self) -> None:
         elapsed = time.monotonic() - self._start_time
-        text = f"처리 중... (경과 {format_hms(elapsed)}"
+        text = f"{self._queue_position()}처리 중... (경과 {format_hms(elapsed)}"
         if self._progress_total and self._progress_current > 0 and elapsed > 1:
             speed = self._progress_current / elapsed  # 오디오 초 / 실제 초
             remaining_audio = max(0.0, self._progress_total - self._progress_current)
@@ -356,20 +429,44 @@ class MainWindow(QMainWindow):
             for f in obj.get("output_files", []):
                 self._log(f"저장됨: {f}")
 
-    def _on_finished(self, exit_code: int, _exit_status) -> None:
+    def _on_finished(self, exit_code: int, exit_status) -> None:
         self._elapsed_timer.stop()
-        self.start_btn.setEnabled(True)
-        self.cancel_btn.setEnabled(False)
-        if exit_code == 0:
-            self.status_label.setText("완료")
+        item, self.current_item = self.current_item, None
+        if item is None:
+            return
+        if self._cancelled:
+            self._set_status(item, "pending")
+            self._log("취소됨.")
+            self.status_label.setText("취소됨")
+            self.cancel_btn.setEnabled(False)
+            self._update_start_btn()
+            return
+        if exit_code == 0 and exit_status == QProcess.NormalExit:
+            self._set_status(item, "done")
             self.open_folder_btn.setEnabled(True)
-            QMessageBox.information(self, "완료", "전사가 완료되었습니다.")
         else:
-            self.status_label.setText("실패")
-            QMessageBox.critical(self, "실패", "전사 중 오류가 발생했습니다. 로그를 확인하세요.")
+            self._set_status(item, "failed")
+            self._log("[오류] 이 파일의 전사에 실패했습니다. 다음 파일로 넘어갑니다.")
+        self._start_next()
 
-    def _on_process_error(self, _error) -> None:
+    def _finish_queue(self) -> None:
+        self.cancel_btn.setEnabled(False)
+        self._update_start_btn()
+        statuses = [i.data(STATUS_ROLE) for i in self._queue_items()]
+        done, failed = statuses.count("done"), statuses.count("failed")
+        self.status_label.setText(f"완료 {done}개 / 실패 {failed}개")
+        if failed:
+            QMessageBox.warning(
+                self, "일부 실패", f"완료 {done}개, 실패 {failed}개. 로그를 확인하세요."
+            )
+        else:
+            QMessageBox.information(self, "완료", f"대기 큐의 전사가 모두 완료되었습니다. ({done}개)")
+
+    def _on_process_error(self, error) -> None:
         self._log("[오류] 프로세스를 실행할 수 없습니다.")
+        # 시작 자체가 실패하면 finished 시그널이 오지 않으므로 직접 다음으로 넘긴다
+        if error == QProcess.FailedToStart:
+            self._on_finished(1, QProcess.CrashExit)
 
     def _on_open_folder(self) -> None:
         if self.output_dir is not None:
