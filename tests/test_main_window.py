@@ -53,6 +53,7 @@ class MainWindowTest(unittest.TestCase):
         self.assertIn("--no-condition-prev", args)
         self.assertNotIn("--dedupe", args)
         self.assertIn("--skip-silence", args)
+        self.assertNotIn("--preprocess", args)
         self.assertIn("--paragraph-gap=1.5", args)
         self.assertIn("--no-txt-timestamps", args)
 

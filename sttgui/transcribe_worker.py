@@ -9,7 +9,7 @@ mlx_whisper 자체의 verbose 출력은 절대 실제 stdout으로 새어나가�
 사용법:
     python transcribe_worker.py --audio PATH --model REPO_ID \
         --language ko|en|auto --outdir DIR --formats txt,srt,vtt,md \
-        [--initial-prompt "전문 용어, ..."] [--no-condition-prev] [--dedupe] [--skip-silence] \
+        [--initial-prompt "전문 용어, ..."] [--no-condition-prev] [--dedupe] [--skip-silence] [--preprocess] \
         [--paragraph-gap 2.0] [--no-txt-timestamps]
 """
 from __future__ import annotations
@@ -22,6 +22,8 @@ import re
 import subprocess
 import sys
 import traceback
+
+import numpy as np
 from pathlib import Path
 from typing import Any, Callable, TextIO
 
@@ -29,6 +31,9 @@ from typing import Any, Callable, TextIO
 Segment = dict[str, Any]
 
 TIMESTAMP_RE = re.compile(r"^\[([\d:.]+)\s*-->\s*([\d:.]+)\]\s?(.*)$")
+SAMPLE_RATE = 16000  # Whisper 입력 샘플레이트
+# 저음 웅웅거림(80Hz 이하) 제거 → FFT 잡음 제거 → 음량 정규화
+PREPROCESS_FILTER = "highpass=f=80,afftdn,loudnorm"
 # 환각 의심 세그먼트 앞뒤 무음이 이 길이(초)보다 길면 건너뛴다
 SILENCE_THRESHOLD = 2.0
 # 공백으로 구분된 1~5단어 묶음이 4번 이상 연속 반복되는 패턴 ("아 아 아 아 ...")
@@ -87,6 +92,17 @@ def get_duration_seconds(path: str) -> float | None:
         return float(out.strip())
     except Exception:
         return None
+
+
+def load_preprocessed_audio(path: str) -> np.ndarray:
+    """ffmpeg 필터를 거친 16kHz 모노 float32 파형을 돌려준다 (mlx_whisper.load_audio와 같은 형식)."""
+    out = subprocess.run(
+        ["ffmpeg", "-nostdin", "-threads", "0", "-i", path, "-af", PREPROCESS_FILTER,
+         "-f", "s16le", "-ac", "1", "-acodec", "pcm_s16le", "-ar", str(SAMPLE_RATE), "-"],
+        capture_output=True,
+        check=True,
+    ).stdout
+    return np.frombuffer(out, np.int16).astype(np.float32) / 32768.0
 
 
 class VerboseLineCapture(io.TextIOBase):
@@ -218,6 +234,9 @@ def main() -> int:
         "--skip-silence", action="store_true", help="무음 구간 환각 건너뛰기 (단어 타임스탬프 사용)"
     )
     parser.add_argument(
+        "--preprocess", action="store_true", help="ffmpeg 잡음 제거·음량 정규화 후 전사"
+    )
+    parser.add_argument(
         "--paragraph-gap", type=float, default=2.0, help="TXT/MD 문단을 나누는 무음 간격(초)"
     )
     parser.add_argument(
@@ -256,8 +275,9 @@ def main() -> int:
 
     sys.stdout = VerboseLineCapture(on_verbose_line)
     try:
+        audio = load_preprocessed_audio(args.audio) if args.preprocess else args.audio
         result = mlx_whisper.transcribe(
-            args.audio,
+            audio,
             path_or_hf_repo=args.model,
             verbose=True,
             language=language,

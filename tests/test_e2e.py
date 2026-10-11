@@ -30,7 +30,7 @@ class WorkerE2ETest(unittest.TestCase):
             proc = subprocess.run(
                 [sys.executable, str(WORKER), "--audio", str(SAMPLE), "--model", MODEL,
                  "--language", "ko", "--outdir", out, "--formats", "txt,srt,vtt,md",
-                 "--initial-prompt=데이터베이스, 정규화", "--no-condition-prev", "--dedupe", "--skip-silence",
+                 "--initial-prompt=데이터베이스, 정규화", "--no-condition-prev", "--dedupe", "--skip-silence", "--preprocess",
                  "--paragraph-gap=0.5"],
                 capture_output=True, text=True, timeout=300,
             )

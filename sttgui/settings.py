@@ -60,6 +60,7 @@ class Settings:
     no_condition_prev: bool = True  # condition_on_previous_text=False (반복 환각 감소)
     dedupe: bool = True  # 연속 중복 세그먼트 제거 후처리
     skip_silence: bool = True  # 무음 구간 환각 건너뛰기 (hallucination_silence_threshold)
+    preprocess: bool = False  # ffmpeg 잡음 제거·음량 정규화 후 전사
     paragraph_gap: float = 2.0  # TXT/MD 문단을 나누는 무음 간격(초)
     txt_timestamps: bool = True  # TXT 문단 앞에 [HH:MM:SS] 표시
 
@@ -141,6 +142,13 @@ class SettingsDialog(QDialog):
             "단어 단위 시각을 계산하므로 전사가 조금 느려집니다."
         )
         stt_form.addRow("", self.skip_silence_check)
+        self.preprocess_check = QCheckBox("음성 전처리 (잡음 제거·음량 정규화)")
+        self.preprocess_check.setChecked(settings.preprocess)
+        self.preprocess_check.setToolTip(
+            "ffmpeg로 저음 웅웅거림과 배경 잡음을 줄이고 음량을 고르게 맞춘 뒤 전사합니다.\n"
+            "작게 말하거나 잡음이 많은 녹음에 도움이 되지만, 깨끗한 녹음에서는 효과가 없을 수 있습니다."
+        )
+        stt_form.addRow("", self.preprocess_check)
         layout.addWidget(stt_group)
 
         # 출력
@@ -204,6 +212,7 @@ class SettingsDialog(QDialog):
             no_condition_prev=self.no_prev_check.isChecked(),
             dedupe=self.dedupe_check.isChecked(),
             skip_silence=self.skip_silence_check.isChecked(),
+            preprocess=self.preprocess_check.isChecked(),
             paragraph_gap=self.gap_spin.value(),
             txt_timestamps=self.txt_ts_check.isChecked(),
         )

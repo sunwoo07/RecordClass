@@ -1,5 +1,6 @@
 """transcribe_worker의 순수 함수(후처리·타임스탬프·출력 작성기) 검사."""
 import io
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,7 @@ from sttgui.transcribe_worker import (
     format_srt_timestamp,
     format_vtt_timestamp,
     group_paragraphs,
+    load_preprocessed_audio,
     parse_timestamp,
     write_md,
     write_srt,
@@ -66,6 +68,20 @@ class DedupeTest(unittest.TestCase):
     def test_phrase_loop_collapsed(self) -> None:
         out = dedupe_segments([seg(0, 1, "이게 더 이게 더 이게 더 이게 더 중요")])
         self.assertEqual(out[0]["text"], "이게 더 중요")
+
+
+class PreprocessTest(unittest.TestCase):
+    def test_returns_16k_mono_float(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            wav = str(Path(d) / "tone.wav")
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=f=440:d=2", "-ar", "44100", "-ac", "2", wav],
+                check=True,
+            )
+            audio = load_preprocessed_audio(wav)
+        self.assertEqual(audio.dtype.name, "float32")
+        self.assertAlmostEqual(len(audio) / 16000, 2.0, delta=0.1)
+        self.assertLessEqual(float(abs(audio).max()), 1.0)
 
 
 class ParagraphTest(unittest.TestCase):

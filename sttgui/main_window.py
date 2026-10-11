@@ -293,6 +293,7 @@ class MainWindow(QMainWindow):
             + (["--no-condition-prev"] if settings.no_condition_prev else [])
             + (["--dedupe"] if settings.dedupe else [])
             + (["--skip-silence"] if settings.skip_silence else [])
+            + (["--preprocess"] if settings.preprocess else [])
             + [f"--paragraph-gap={settings.paragraph_gap}"]
             + ([] if settings.txt_timestamps else ["--no-txt-timestamps"])
         )

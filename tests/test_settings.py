@@ -28,6 +28,7 @@ class SettingsTest(unittest.TestCase):
             no_condition_prev=False,
             dedupe=False,
             skip_silence=False,
+            preprocess=True,
             paragraph_gap=3.5,
             txt_timestamps=False,
         )
@@ -62,11 +63,13 @@ class SettingsDialogTest(unittest.TestCase):
         dlg = SettingsDialog(Settings())
         dlg.dedupe_check.setChecked(False)
         dlg.skip_silence_check.setChecked(False)
+        dlg.preprocess_check.setChecked(True)
         dlg.format_checks["md"].setChecked(True)
         dlg.gap_spin.setValue(1.5)
         out = dlg.settings()
         self.assertFalse(out.dedupe)
         self.assertFalse(out.skip_silence)
+        self.assertTrue(out.preprocess)
         self.assertIn("md", out.formats)
         self.assertEqual(out.paragraph_gap, 1.5)
 
