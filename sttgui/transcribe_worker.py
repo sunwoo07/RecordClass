@@ -9,7 +9,7 @@ mlx_whisper 자체의 verbose 출력은 절대 실제 stdout으로 새어나가�
 사용법:
     python transcribe_worker.py --audio PATH --model REPO_ID \
         --language ko|en|auto --outdir DIR --formats txt,srt,vtt,md \
-        [--initial-prompt "전문 용어, ..."] [--no-condition-prev] [--dedupe] \
+        [--initial-prompt "전문 용어, ..."] [--no-condition-prev] [--dedupe] [--skip-silence] \
         [--paragraph-gap 2.0] [--no-txt-timestamps]
 """
 from __future__ import annotations
@@ -29,6 +29,8 @@ from typing import Any, Callable, TextIO
 Segment = dict[str, Any]
 
 TIMESTAMP_RE = re.compile(r"^\[([\d:.]+)\s*-->\s*([\d:.]+)\]\s?(.*)$")
+# 환각 의심 세그먼트 앞뒤 무음이 이 길이(초)보다 길면 건너뛴다
+SILENCE_THRESHOLD = 2.0
 # 공백으로 구분된 1~5단어 묶음이 4번 이상 연속 반복되는 패턴 ("아 아 아 아 ...")
 REPEAT_RE = re.compile(r"(?<!\S)(\S+(?:\s+\S+){0,4}?)(?:\s+\1){3,}(?!\S)")
 
@@ -213,6 +215,9 @@ def main() -> int:
     )
     parser.add_argument("--dedupe", action="store_true", help="연속 중복 세그먼트 제거")
     parser.add_argument(
+        "--skip-silence", action="store_true", help="무음 구간 환각 건너뛰기 (단어 타임스탬프 사용)"
+    )
+    parser.add_argument(
         "--paragraph-gap", type=float, default=2.0, help="TXT/MD 문단을 나누는 무음 간격(초)"
     )
     parser.add_argument(
@@ -259,6 +264,12 @@ def main() -> int:
             initial_prompt=args.initial_prompt.strip() or None,
             # 플래그가 없으면 라이브러리 기본값(True)
             **({"condition_on_previous_text": False} if args.no_condition_prev else {}),
+            # hallucination_silence_threshold는 word_timestamps=True일 때만 동작
+            **(
+                {"word_timestamps": True, "hallucination_silence_threshold": SILENCE_THRESHOLD}
+                if args.skip_silence
+                else {}
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         sys.stdout = real_stdout

@@ -59,6 +59,7 @@ class Settings:
     initial_prompt: str = ""  # 전문 용어 힌트 (mlx_whisper initial_prompt)
     no_condition_prev: bool = True  # condition_on_previous_text=False (반복 환각 감소)
     dedupe: bool = True  # 연속 중복 세그먼트 제거 후처리
+    skip_silence: bool = True  # 무음 구간 환각 건너뛰기 (hallucination_silence_threshold)
     paragraph_gap: float = 2.0  # TXT/MD 문단을 나누는 무음 간격(초)
     txt_timestamps: bool = True  # TXT 문단 앞에 [HH:MM:SS] 표시
 
@@ -133,6 +134,13 @@ class SettingsDialog(QDialog):
             "연속으로 똑같이 반복된 문장을 하나로 합쳐 저장합니다. (실시간 미리보기에는 적용되지 않음)"
         )
         stt_form.addRow("", self.dedupe_check)
+        self.skip_silence_check = QCheckBox("무음 구간 환각 건너뛰기")
+        self.skip_silence_check.setChecked(settings.skip_silence)
+        self.skip_silence_check.setToolTip(
+            "말이 없는 구간에서 '아 아 아…'처럼 지어낸 글자가 나오는 것을 줄입니다.\n"
+            "단어 단위 시각을 계산하므로 전사가 조금 느려집니다."
+        )
+        stt_form.addRow("", self.skip_silence_check)
         layout.addWidget(stt_group)
 
         # 출력
@@ -195,6 +203,7 @@ class SettingsDialog(QDialog):
             initial_prompt=self.prompt_edit.toPlainText().strip(),
             no_condition_prev=self.no_prev_check.isChecked(),
             dedupe=self.dedupe_check.isChecked(),
+            skip_silence=self.skip_silence_check.isChecked(),
             paragraph_gap=self.gap_spin.value(),
             txt_timestamps=self.txt_ts_check.isChecked(),
         )

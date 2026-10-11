@@ -27,6 +27,7 @@ class SettingsTest(unittest.TestCase):
             initial_prompt="미적분,\n고유벡터",
             no_condition_prev=False,
             dedupe=False,
+            skip_silence=False,
             paragraph_gap=3.5,
             txt_timestamps=False,
         )
@@ -60,10 +61,12 @@ class SettingsDialogTest(unittest.TestCase):
     def test_dialog_edits(self) -> None:
         dlg = SettingsDialog(Settings())
         dlg.dedupe_check.setChecked(False)
+        dlg.skip_silence_check.setChecked(False)
         dlg.format_checks["md"].setChecked(True)
         dlg.gap_spin.setValue(1.5)
         out = dlg.settings()
         self.assertFalse(out.dedupe)
+        self.assertFalse(out.skip_silence)
         self.assertIn("md", out.formats)
         self.assertEqual(out.paragraph_gap, 1.5)
 

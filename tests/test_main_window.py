@@ -38,7 +38,7 @@ class MainWindowTest(unittest.TestCase):
     def test_worker_arguments_follow_settings(self) -> None:
         self.win.settings = Settings(
             model="m", language="en", formats=["txt", "md"], output_dir="/out",
-            initial_prompt="-용어", no_condition_prev=True, dedupe=False,
+            initial_prompt="-용어", no_condition_prev=True, dedupe=False, skip_silence=True,
             paragraph_gap=1.5, txt_timestamps=False,
         )
         self.win._add_files([Path("/x/lec.m4a")])
@@ -52,6 +52,7 @@ class MainWindowTest(unittest.TestCase):
         self.assertIn("--initial-prompt=-용어", args)
         self.assertIn("--no-condition-prev", args)
         self.assertNotIn("--dedupe", args)
+        self.assertIn("--skip-silence", args)
         self.assertIn("--paragraph-gap=1.5", args)
         self.assertIn("--no-txt-timestamps", args)
 
