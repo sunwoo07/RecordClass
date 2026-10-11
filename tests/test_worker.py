@@ -55,6 +55,18 @@ class DedupeTest(unittest.TestCase):
         self.assertEqual(dedupe_segments(segs), [seg(0, 3, "A")])
         self.assertEqual(segs[0]["end"], 1)
 
+    def test_in_segment_loop_collapsed(self) -> None:
+        out = dedupe_segments([seg(0, 1, " " + "아 " * 200), seg(1, 2, "4 5 " + "5 " * 50 + "끝")])
+        self.assertEqual([s["text"] for s in out], [" 아 ", "4 5 끝"])
+
+    def test_short_repeats_kept(self) -> None:
+        out = dedupe_segments([seg(0, 1, "네 네 네 맞아요"), seg(1, 2, "5 55 5 5")])
+        self.assertEqual([s["text"] for s in out], ["네 네 네 맞아요", "5 55 5 5"])
+
+    def test_phrase_loop_collapsed(self) -> None:
+        out = dedupe_segments([seg(0, 1, "이게 더 이게 더 이게 더 이게 더 중요")])
+        self.assertEqual(out[0]["text"], "이게 더 중요")
+
 
 class ParagraphTest(unittest.TestCase):
     def test_split_on_gap(self) -> None:

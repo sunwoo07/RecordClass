@@ -29,6 +29,8 @@ from typing import Any, Callable, TextIO
 Segment = dict[str, Any]
 
 TIMESTAMP_RE = re.compile(r"^\[([\d:.]+)\s*-->\s*([\d:.]+)\]\s?(.*)$")
+# 공백으로 구분된 1~5단어 묶음이 4번 이상 연속 반복되는 패턴 ("아 아 아 아 ...")
+REPEAT_RE = re.compile(r"(?<!\S)(\S+(?:\s+\S+){0,4}?)(?:\s+\1){3,}(?!\S)")
 
 
 def emit(stream: TextIO, obj: dict[str, Any]) -> None:
@@ -164,8 +166,13 @@ def write_vtt(segments: list[Segment], path: Path) -> None:
             f.write(seg["text"].strip() + "\n\n")
 
 
+def collapse_repeats(text: str) -> str:
+    """한 세그먼트 안에서 같은 단어(묶음)가 4번 이상 연달아 나오면 한 번만 남긴다."""
+    return REPEAT_RE.sub(r"\1", text)
+
+
 def dedupe_segments(segments: list[Segment]) -> list[Segment]:
-    """연속으로 반복된 세그먼트(정규화한 텍스트가 같음)를 첫 세그먼트로 합친다.
+    """세그먼트 안의 반복 루프를 접고, 연속으로 반복된 세그먼트(정규화한 텍스트가 같음)를 첫 세그먼트로 합친다.
 
     Whisper가 긴 녹음에서 같은 문장을 반복 출력하는 환각을 줄이기 위한 후처리.
     남긴 세그먼트의 end를 마지막 중복의 end로 늘려 타임스탬프가 끊기지 않게 하고,
@@ -174,13 +181,14 @@ def dedupe_segments(segments: list[Segment]) -> list[Segment]:
     kept: list[Segment] = []
     prev_key = None
     for seg in segments:
-        key = " ".join(seg["text"].split()).lower()
+        text = collapse_repeats(seg["text"])
+        key = " ".join(text.split()).lower()
         if not key:
             continue
         if key == prev_key:
             kept[-1]["end"] = seg["end"]
             continue
-        kept.append(dict(seg))
+        kept.append({**seg, "text": text})
         prev_key = key
     return kept
 
