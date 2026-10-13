@@ -3,6 +3,7 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from sttgui.main_window import MainWindow
+from sttgui.style import apply_style
 
 
 def main() -> int:
@@ -11,6 +12,7 @@ def main() -> int:
     app.setOrganizationName("RecordClass")
     app.setOrganizationDomain("recordclass.com")
     app.setApplicationName("RecordClass")
+    apply_style(app)
     window = MainWindow()
     window.show()
     return app.exec()

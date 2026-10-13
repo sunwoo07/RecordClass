@@ -114,6 +114,8 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         central = QWidget()
         layout = QVBoxLayout(central)
+        layout.setContentsMargins(20, 16, 20, 20)
+        layout.setSpacing(12)
 
         # 파일 선택
         file_group = QGroupBox("1. 강의 녹음 파일 (대기 큐 — 드래그하거나 '파일 추가')")
@@ -140,7 +142,7 @@ class MainWindow(QMainWindow):
         # 현재 설정 요약 (변경은 환경설정 창에서)
         self.settings_label = QLabel(self.settings.summary())
         self.settings_label.setWordWrap(True)
-        self.settings_label.setStyleSheet("color: gray;")
+        self.settings_label.setProperty("role", "muted")
         layout.addWidget(self.settings_label)
 
         # 컨트롤
@@ -148,6 +150,7 @@ class MainWindow(QMainWindow):
         self.start_btn = QPushButton("전사 시작")
         self.start_btn.clicked.connect(self._on_start)
         self.start_btn.setEnabled(False)
+        self.start_btn.setProperty("role", "primary")
         self.cancel_btn = QPushButton("취소")
         self.cancel_btn.clicked.connect(self._on_cancel)
         self.cancel_btn.setEnabled(False)
@@ -160,12 +163,15 @@ class MainWindow(QMainWindow):
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.status_label = QLabel("대기 중")
+        self.status_label.setProperty("role", "muted")
         progress_layout.addWidget(self.progress_bar, stretch=1)
         progress_layout.addWidget(self.status_label)
         layout.addLayout(progress_layout)
 
         # 로그 / 미리보기
-        layout.addWidget(QLabel("실시간 결과 미리보기:"))
+        preview_label = QLabel("실시간 결과 미리보기")
+        preview_label.setProperty("role", "heading")
+        layout.addWidget(preview_label)
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         layout.addWidget(self.log_view, stretch=1)
