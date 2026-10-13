@@ -134,7 +134,8 @@ class MainWindowTest(unittest.TestCase):
         self.assertEqual(self.statuses(), ["done", "running"])
         self.win._on_finished(1, QProcess.NormalExit)
         self.assertEqual(self.statuses(), ["done", "failed"])
-        mw.QMessageBox.warning.assert_called_once()
+        mw.QMessageBox.warning.assert_not_called()  # 끝나도 모달로 막지 않는다
+        self.assertFalse(self.win.cancel_btn.isVisibleTo(self.win))
         self.assertIn("완료 1개 / 실패 1개", self.win.status_label.text())
 
     def test_cancel_returns_item_to_pending(self) -> None:
@@ -156,25 +157,56 @@ class MainWindowTest(unittest.TestCase):
         self.assertEqual(self.win.queue_list.count(), 0)
 
     def test_handle_messages(self) -> None:
+        self.win._add_files([Path("/a.mp3")])
+        self.win._on_start()
+        item = self.win._queue_items()[0]
         self.win._handle_message({"type": "start", "total": 100})
         self.win._handle_message({"type": "progress", "current": 25, "total": 100})
         self.assertEqual(self.win.progress_bar.value(), 25)
+        self.assertEqual(item.data(mw.PROGRESS_ROLE), 25)
         self.win._handle_message({"type": "segment", "start": 0, "end": 2, "text": "안녕"})
+        self.win._handle_message({"type": "segment", "start": 2, "end": 4, "text": "<b>"})
+        self.assertEqual(item.data(mw.TRANSCRIPT_ROLE), "[00:00] 안녕\n\n[00:02] <b>")
+        self.assertIn("<b>", self.win.transcript_view.toPlainText())  # HTML로 해석되지 않는다
         self.win._handle_message({"type": "done", "output_files": ["/o/a.txt"]})
         self.assertEqual(self.win.progress_bar.value(), 100)
-        log = self.win.log_view.toPlainText()
-        self.assertIn("안녕", log)
-        self.assertIn("저장됨: /o/a.txt", log)
+        self.assertIn("저장됨: /o/a.txt", self.win.log_view.toPlainText())
 
-    def test_preferences_saved_and_summary_updated(self) -> None:
-        new = Settings(formats=["md"])
-        with mock.patch.object(mw, "SettingsDialog") as dlg_cls:
-            dlg_cls.Accepted = 1
-            dlg_cls.return_value.exec.return_value = 1
-            dlg_cls.return_value.settings.return_value = new
-            self.win._on_preferences()
-        self.assertEqual(Settings.load(), new)
+    def test_done_loads_saved_txt_and_follows_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            txt = Path(d, "a.txt")
+            txt.write_text("[00:00:01] 첫 문단\n\n[00:00:09] 둘째 문단", encoding="utf-8")
+            self.win._add_files([Path("/a.mp3"), Path("/b.mp3")])
+            self.win._on_start()
+            first, second = self.win._queue_items()
+            self.assertIs(self.win._focused_item(), first)
+            self.win._handle_message({"type": "done", "output_files": [str(txt)]})
+            self.win._on_finished(0, mw.QProcess.NormalExit)
+            self.assertEqual(first.data(mw.TRANSCRIPT_ROLE), txt.read_text(encoding="utf-8"))
+            self.assertIs(self.win._focused_item(), second)  # 보던 파일이 끝나면 다음 파일을 따라간다
+
+    def test_transcript_html_escapes_and_dims_timestamp(self) -> None:
+        out = mw.transcript_html("[00:01] a<b\n\n둘째")
+        self.assertIn("a&lt;b", out)
+        self.assertIn(">00:01</span>", out)
+        self.assertEqual(out.count("<p"), 2)
+
+    def test_settings_tab_saves_immediately(self) -> None:
+        self.win._on_preferences()
+        self.assertIs(self.win.stack.currentWidget(), self.win.settings_panel)
+        self.win.settings_panel.format_checks["md"].setChecked(True)
+        self.assertIn("md", Settings.load().formats)
         self.assertIn("MD", self.win.settings_label.text())
+        self.win._add_files([Path("/a.mp3")])
+        self.win._on_start()  # 시작하면 작업 탭으로 돌아온다
+        self.assertEqual(self.win.stack.currentIndex(), 0)
+
+    def test_start_button_counts_pending(self) -> None:
+        self.win._add_files([Path("/a.mp3"), Path("/b.mp3")])
+        self.assertEqual(self.win.start_btn.text(), "2개 전사 시작")
+        self.win._on_start()
+        self.assertFalse(self.win.start_btn.isVisibleTo(self.win))
+        self.assertTrue(self.win.cancel_btn.isVisibleTo(self.win))
 
 
 if __name__ == "__main__":

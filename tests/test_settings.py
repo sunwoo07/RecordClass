@@ -5,8 +5,7 @@ from unittest import mock
 from PySide6.QtCore import QSettings
 
 from tests import clear_settings, qt_app
-from sttgui import settings as settings_mod
-from sttgui.settings import DEFAULT_FORMATS, Settings, SettingsDialog
+from sttgui.settings import DEFAULT_FORMATS, Settings, SettingsPanel
 
 
 class SettingsTest(unittest.TestCase):
@@ -50,22 +49,21 @@ class SettingsTest(unittest.TestCase):
         text = Settings(formats=["txt", "md"]).summary()
         self.assertIn("large-v3-turbo", text)
         self.assertIn("TXT, MD", text)
-        self.assertIn("⌘,", text)
         self.assertNotIn("LLM 교정", text)
         self.assertIn("LLM 교정", Settings(correct=True).summary())
 
 
-class SettingsDialogTest(unittest.TestCase):
+class SettingsPanelTest(unittest.TestCase):
     def setUp(self) -> None:
         qt_app()
 
     def test_dialog_reflects_and_returns_settings(self) -> None:
         s = Settings(language="en", formats=["srt", "md"], initial_prompt="용어", paragraph_gap=4.0,
                      correct=True, llm_model="직접/입력한-모델")
-        self.assertEqual(SettingsDialog(s).settings(), s)
+        self.assertEqual(SettingsPanel(s).settings(), s)
 
     def test_dialog_edits(self) -> None:
-        dlg = SettingsDialog(Settings())
+        dlg = SettingsPanel(Settings())
         dlg.dedupe_check.setChecked(False)
         dlg.skip_silence_check.setChecked(False)
         dlg.preprocess_check.setChecked(True)
@@ -82,15 +80,23 @@ class SettingsDialogTest(unittest.TestCase):
         self.assertIn("md", out.formats)
         self.assertEqual(out.paragraph_gap, 1.5)
 
-    def test_accept_refuses_no_format(self) -> None:
-        dlg = SettingsDialog(Settings())
-        for check in dlg.format_checks.values():
-            check.setChecked(False)
-        with mock.patch.object(settings_mod.QMessageBox, "warning") as warn:
-            dlg.accept()
-        warn.assert_called_once()
-        self.assertNotEqual(dlg.result(), SettingsDialog.Accepted)
+    def test_last_format_cannot_be_unchecked(self) -> None:
+        panel = SettingsPanel(Settings(formats=["txt", "srt"]))
+        changed = mock.Mock()
+        panel.changed.connect(changed)
+        panel.format_checks["txt"].setChecked(False)
+        panel.format_checks["srt"].setChecked(False)  # 마지막 하나는 다시 켜진다
+        self.assertEqual(panel.settings().formats, ["srt"])
+        self.assertEqual(changed.call_count, 1)
 
+    def test_changes_emit_signal(self) -> None:
+        panel = SettingsPanel(Settings())
+        changed = mock.Mock()
+        panel.changed.connect(changed)
+        panel.dedupe_check.setChecked(False)
+        panel.prompt_edit.setPlainText("용어")
+        panel.lang_combo.setCurrentIndex(2)
+        self.assertEqual(changed.call_count, 3)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,9 +1,10 @@
 """
-사용자 설정(환경설정 창, ⌘,)과 QSettings 저장/불러오기.
+사용자 설정(메인 창의 '설정' 탭)과 QSettings 저장/불러오기.
 
 새 설정을 추가하려면:
   1. Settings에 기본값이 있는 필드를 추가한다 (load/save는 필드를 자동으로 순회).
-  2. SettingsDialog에 위젯을 만들고, __init__에서 값을 채우고 settings()에서 읽는다.
+  2. SettingsPanel에 행을 만들고, __init__에서 값을 채우고 settings()에서 읽는다.
+     값이 바뀌면 changed 시그널을 내보낸다 (메인 창이 바로 저장).
   3. MainWindow._start_next에서 워커 CLI 인자로 넘긴다.
 """
 from __future__ import annotations
@@ -11,21 +12,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
-    QFormLayout,
-    QGroupBox,
+    QFrame,
     QHBoxLayout,
-    QLineEdit,
-    QMessageBox,
+    QLabel,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -96,137 +94,219 @@ class Settings:
         fmts = ", ".join(f.upper() for f in self.formats)
         outdir = self.output_dir.replace(str(Path.home()), "~", 1) or "원본 파일 폴더"
         correct = " · LLM 교정" if self.correct else ""
-        return f"모델: {model.split(' (')[0]} · {lang} · {fmts}{correct} · 저장: {outdir} — ⌘, 로 변경"
+        return f"{model.split(' (')[0]} · {lang} · {fmts}{correct}\n저장: {outdir}"
 
 
-class SettingsDialog(QDialog):
-    """Settings를 편집하는 환경설정 창. 섹션(QGroupBox + QFormLayout) 단위로 추가한다."""
+class _Card(QFrame):
+    """시스템 설정처럼 제목·설명과 컨트롤이 한 줄씩 놓이고 hairline으로 나뉘는 카드."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setProperty("role", "card")
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(16, 2, 16, 2)
+        self._layout.setSpacing(0)
+
+    def add_row(self, title: str, control: QWidget, desc: str = "", stacked: bool = False) -> None:
+        if self._layout.count():
+            line = QFrame()
+            line.setProperty("role", "separator")
+            line.setFixedHeight(1)
+            self._layout.addWidget(line)
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        text.addWidget(QLabel(title))
+        if desc:
+            desc_label = QLabel(desc)
+            desc_label.setProperty("role", "muted")
+            desc_label.setWordWrap(True)
+            text.addWidget(desc_label)
+        row = QWidget()
+        if stacked:  # 넓은 입력칸은 제목 아래에 둔다
+            layout = QVBoxLayout(row)
+            layout.addLayout(text)
+            layout.addWidget(control)
+        else:
+            layout = QHBoxLayout(row)
+            layout.addLayout(text, stretch=1)
+            layout.addSpacing(16)
+            layout.addWidget(control, alignment=Qt.AlignVCenter)
+        layout.setContentsMargins(0, 10, 0, 10)
+        self._layout.addWidget(row)
+
+
+def _switch(checked: bool) -> QCheckBox:
+    check = QCheckBox()
+    check.setProperty("role", "switch")
+    check.setChecked(checked)
+    check.setCursor(Qt.PointingHandCursor)
+    return check
+
+
+def _display_dir(path: str) -> str:
+    return path.replace(str(Path.home()), "~", 1) if path else "원본 파일과 같은 폴더"
+
+
+class SettingsPanel(QScrollArea):
+    """메인 창 '설정' 탭. 값이 바뀌면 changed 시그널을 내보내고 메인 창이 바로 저장한다."""
+
+    changed = Signal()
 
     def __init__(self, settings: Settings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("환경설정")
-        self.setMinimumWidth(480)
-        layout = QVBoxLayout(self)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        body = QWidget()
+        body.setProperty("role", "page")
+        outer = QHBoxLayout(body)  # 넓은 창에서도 설명이 한눈에 읽히도록 폭을 제한하고 가운데 둔다
+        outer.setContentsMargins(4, 0, 12, 24)
+        column = QWidget()
+        column.setMaximumWidth(720)
+        outer.addWidget(column)
+        layout = QVBoxLayout(column)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        def section(title: str) -> _Card:
+            label = QLabel(title)
+            label.setProperty("role", "section")
+            layout.addWidget(label)
+            card = _Card()
+            layout.addWidget(card)
+            return card
 
         # 전사
-        stt_group = QGroupBox("전사")
-        stt_form = QFormLayout(stt_group)
+        stt = section("전사")
         self.model_combo = QComboBox()
         for label, repo in MODEL_OPTIONS:
             self.model_combo.addItem(label, repo)
         self.model_combo.setCurrentIndex(max(0, self.model_combo.findData(settings.model)))
-        stt_form.addRow("모델:", self.model_combo)
+        self.model_combo.setMinimumWidth(220)
+        stt.add_row("Whisper 모델", self.model_combo, "큰 모델일수록 정확하지만 느립니다.")
         self.lang_combo = QComboBox()
         for label, code in LANGUAGE_OPTIONS:
             self.lang_combo.addItem(label, code)
         self.lang_combo.setCurrentIndex(max(0, self.lang_combo.findData(settings.language)))
-        stt_form.addRow("언어:", self.lang_combo)
+        self.lang_combo.setMinimumWidth(220)
+        stt.add_row("강의 언어", self.lang_combo)
         self.prompt_edit = QPlainTextEdit(settings.initial_prompt)
-        self.prompt_edit.setPlaceholderText(
-            "예: 미적분, 라그랑주 승수, 고유벡터 — 강의에 나오는 과목명·전문 용어를 쉼표로 입력"
+        self.prompt_edit.setPlaceholderText("예: 미적분, 라그랑주 승수, 고유벡터")
+        self.prompt_edit.setFixedHeight(self.prompt_edit.fontMetrics().lineSpacing() * 3 + 16)
+        stt.add_row(
+            "전문 용어 힌트",
+            self.prompt_edit,
+            "강의에 나오는 과목명·전문 용어를 쉼표로 적어 두면 인식률이 올라갑니다. LLM 교정의 용어집으로도 쓰입니다.",
+            stacked=True,
         )
-        self.prompt_edit.setToolTip("입력한 용어를 모델에 미리 알려 주어 전문 용어 인식률을 높입니다.")
-        self.prompt_edit.setFixedHeight(self.prompt_edit.fontMetrics().lineSpacing() * 3 + 12)
-        stt_form.addRow("전문 용어 힌트:", self.prompt_edit)
-        self.no_prev_check = QCheckBox("이전 문맥 참조 끄기 (반복 오류 감소)")
-        self.no_prev_check.setChecked(settings.no_condition_prev)
-        self.no_prev_check.setToolTip(
-            "앞 구간의 결과를 다음 구간의 힌트로 쓰지 않아, 긴 녹음에서 같은 문장이 반복되는 오류를 줄입니다.\n"
-            "대신 구간 사이의 표기·어투 일관성이 약간 떨어질 수 있습니다."
+
+        # 인식 품질
+        quality = section("인식 품질")
+        self.no_prev_check = _switch(settings.no_condition_prev)
+        quality.add_row(
+            "이전 문맥 참조 끄기", self.no_prev_check,
+            "긴 녹음에서 같은 문장이 끝없이 반복되는 오류를 줄입니다. 구간 사이 어투 일관성은 약간 떨어질 수 있어요.",
         )
-        stt_form.addRow("", self.no_prev_check)
-        self.dedupe_check = QCheckBox("반복 문장 제거 후처리")
-        self.dedupe_check.setChecked(settings.dedupe)
-        self.dedupe_check.setToolTip(
-            "연속으로 똑같이 반복된 문장을 하나로 합쳐 저장합니다. (실시간 미리보기에는 적용되지 않음)"
+        self.dedupe_check = _switch(settings.dedupe)
+        quality.add_row(
+            "반복 문장 제거", self.dedupe_check,
+            "연속으로 똑같이 반복된 문장을 하나로 합쳐 저장합니다. 실시간 미리보기에는 적용되지 않아요.",
         )
-        stt_form.addRow("", self.dedupe_check)
-        self.skip_silence_check = QCheckBox("무음 구간 환각 건너뛰기")
-        self.skip_silence_check.setChecked(settings.skip_silence)
-        self.skip_silence_check.setToolTip(
-            "말이 없는 구간에서 '아 아 아…'처럼 지어낸 글자가 나오는 것을 줄입니다.\n"
-            "단어 단위 시각을 계산하므로 전사가 조금 느려집니다."
+        self.skip_silence_check = _switch(settings.skip_silence)
+        quality.add_row(
+            "무음 구간 환각 건너뛰기", self.skip_silence_check,
+            "말이 없는 구간에서 지어낸 글자가 나오는 것을 줄입니다. 전사가 조금 느려집니다.",
         )
-        stt_form.addRow("", self.skip_silence_check)
-        self.preprocess_check = QCheckBox("음성 전처리 (잡음 제거·음량 정규화)")
-        self.preprocess_check.setChecked(settings.preprocess)
-        self.preprocess_check.setToolTip(
-            "ffmpeg로 저음 웅웅거림과 배경 잡음을 줄이고 음량을 고르게 맞춘 뒤 전사합니다.\n"
-            "작게 말하거나 잡음이 많은 녹음에 도움이 되지만, 깨끗한 녹음에서는 효과가 없을 수 있습니다."
+        self.preprocess_check = _switch(settings.preprocess)
+        quality.add_row(
+            "음성 전처리", self.preprocess_check,
+            "잡음을 줄이고 음량을 고르게 맞춘 뒤 전사합니다. 작게 말하거나 시끄러운 녹음에 도움이 됩니다.",
         )
-        stt_form.addRow("", self.preprocess_check)
-        layout.addWidget(stt_group)
 
         # 출력
-        out_group = QGroupBox("출력")
-        out_form = QFormLayout(out_group)
-        fmt_row = QHBoxLayout()
-        self.format_checks: dict[str, QCheckBox] = {}
+        out = section("저장")
+        fmt_row = QWidget()
+        fmt_layout = QHBoxLayout(fmt_row)
+        fmt_layout.setContentsMargins(0, 0, 0, 0)
+        fmt_layout.setSpacing(6)
+        self.format_checks: dict[str, QPushButton] = {}
         for label, fmt in FORMAT_OPTIONS:
-            check = QCheckBox(label)
-            check.setChecked(fmt in settings.formats)
-            self.format_checks[fmt] = check
-            fmt_row.addWidget(check)
-        fmt_row.addStretch()
-        out_form.addRow("출력 형식:", fmt_row)
-        outdir_row = QHBoxLayout()
-        self.outdir_edit = QLineEdit(settings.output_dir)
-        self.outdir_edit.setReadOnly(True)
-        outdir_btn = QPushButton("폴더 선택")
+            chip = QPushButton(label)
+            chip.setProperty("role", "chip")
+            chip.setCheckable(True)
+            chip.setChecked(fmt in settings.formats)
+            chip.setCursor(Qt.PointingHandCursor)
+            chip.toggled.connect(self._on_format_toggled)
+            self.format_checks[fmt] = chip
+            fmt_layout.addWidget(chip)
+        fmt_layout.addStretch()
+        out.add_row("파일 형식", fmt_row, "TXT·Markdown은 문단으로, SRT·VTT는 자막 형식으로 저장됩니다.", stacked=True)
+        self._output_dir = settings.output_dir
+        outdir_row = QWidget()
+        outdir_layout = QHBoxLayout(outdir_row)
+        outdir_layout.setContentsMargins(0, 0, 0, 0)
+        self.outdir_label = QLabel(_display_dir(self._output_dir))
+        self.outdir_label.setProperty("role", "muted")
+        self.outdir_label.setToolTip(self._output_dir)
+        outdir_btn = QPushButton("변경…")
         outdir_btn.clicked.connect(self._on_choose_outdir)
-        outdir_row.addWidget(self.outdir_edit, stretch=1)
-        outdir_row.addWidget(outdir_btn)
-        out_form.addRow("저장 위치:", outdir_row)
+        outdir_layout.addWidget(self.outdir_label)
+        outdir_layout.addWidget(outdir_btn)
+        out.add_row("저장 위치", outdir_row)
         self.gap_spin = QDoubleSpinBox()
         self.gap_spin.setRange(0.5, 30.0)
         self.gap_spin.setSingleStep(0.5)
         self.gap_spin.setDecimals(1)
         self.gap_spin.setSuffix(" 초")
         self.gap_spin.setValue(settings.paragraph_gap)
-        self.gap_spin.setToolTip("말이 이 시간 이상 끊기면 TXT·Markdown에서 새 문단으로 나눕니다.")
-        out_form.addRow("문단 구분 간격 (TXT/MD):", self.gap_spin)
-        self.txt_ts_check = QCheckBox("TXT 문단에 타임스탬프 표시")
-        self.txt_ts_check.setChecked(settings.txt_timestamps)
-        out_form.addRow("", self.txt_ts_check)
-        layout.addWidget(out_group)
+        self.gap_spin.setMinimumWidth(90)
+        out.add_row("문단 나누기", self.gap_spin, "말이 이 시간 이상 끊기면 TXT·Markdown에서 새 문단을 시작합니다.")
+        self.txt_ts_check = _switch(settings.txt_timestamps)
+        out.add_row("TXT 문단에 시각 표시", self.txt_ts_check, "문단 앞에 [00:12:34]처럼 강의 시각을 붙입니다.")
 
-        # LLM 후처리
-        llm_group = QGroupBox("LLM 후처리")
-        llm_form = QFormLayout(llm_group)
-        self.correct_check = QCheckBox("전사 후 LLM으로 원문 교정")
-        self.correct_check.setChecked(settings.correct)
-        self.correct_check.setToolTip(
-            "전사가 끝나면 로컬 LLM이 잘못 인식된 단어·맞춤법·띄어쓰기를 고칩니다.\n"
-            "원본은 그대로 두고 '<이름>.corrected.<형식>' 파일을 따로 저장합니다.\n"
-            "최초 실행 시 모델을 내려받으며(약 6GB), 강의 1시간당 수 분~10여 분이 더 걸립니다."
+        # LLM
+        llm = section("LLM 후처리")
+        self.correct_check = _switch(settings.correct)
+        llm.add_row(
+            "전사 후 원문 교정", self.correct_check,
+            "로컬 LLM이 잘못 인식된 단어·맞춤법·띄어쓰기를 고쳐 '.corrected' 파일로 따로 저장합니다. "
+            "첫 실행 시 모델(약 6GB)을 내려받고, 강의 1시간당 수 분~10여 분이 더 걸립니다.",
         )
-        llm_form.addRow("", self.correct_check)
         self.llm_combo = QComboBox()
         self.llm_combo.setEditable(True)
         self.llm_combo.addItems(LLM_MODEL_OPTIONS)
         self.llm_combo.setCurrentText(settings.llm_model)
-        self.llm_combo.setToolTip(
-            "Hugging Face의 mlx-lm 모델 이름. 교정과 요약(완료 항목 우클릭 → 요약 만들기)에 씁니다."
-        )
-        llm_form.addRow("LLM 모델:", self.llm_combo)
-        layout.addWidget(llm_group)
+        llm.add_row("LLM 모델", self.llm_combo, "교정과 요약에 쓰는 Hugging Face mlx-lm 모델 이름입니다.", stacked=True)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        layout.addStretch()
+        self.setWidget(body)
+
+        for combo in (self.model_combo, self.lang_combo):
+            combo.currentIndexChanged.connect(self.changed)
+        self.llm_combo.currentTextChanged.connect(self.changed)
+        self.prompt_edit.textChanged.connect(self.changed)
+        self.gap_spin.valueChanged.connect(self.changed)
+        for check in (self.no_prev_check, self.dedupe_check, self.skip_silence_check,
+                      self.preprocess_check, self.txt_ts_check, self.correct_check):
+            check.toggled.connect(self.changed)
+
+    def _on_format_toggled(self, checked: bool) -> None:
+        # 형식이 하나도 없으면 저장할 게 없으므로 마지막 하나는 끌 수 없다
+        if not checked and not any(c.isChecked() for c in self.format_checks.values()):
+            chip = self.sender()
+            chip.blockSignals(True)
+            chip.setChecked(True)
+            chip.blockSignals(False)
+            return
+        self.changed.emit()
 
     def _on_choose_outdir(self) -> None:
-        start_dir = self.outdir_edit.text() or str(Path.home())
+        start_dir = self._output_dir or str(Path.home())
         dir_str = QFileDialog.getExistingDirectory(self, "저장 폴더 선택", start_dir)
         if dir_str:
-            self.outdir_edit.setText(dir_str)
-
-    def accept(self) -> None:
-        if not self.settings().formats:
-            QMessageBox.warning(self, "출력 형식 없음", "최소 하나의 출력 형식을 선택하세요.")
-            return
-        super().accept()
+            self._output_dir = dir_str
+            self.outdir_label.setText(_display_dir(dir_str))
+            self.outdir_label.setToolTip(dir_str)
+            self.changed.emit()
 
     def settings(self) -> Settings:
         """현재 위젯 값으로 새 Settings를 만든다."""
@@ -234,7 +314,7 @@ class SettingsDialog(QDialog):
             model=self.model_combo.currentData(),
             language=self.lang_combo.currentData(),
             formats=[f for f, c in self.format_checks.items() if c.isChecked()],
-            output_dir=self.outdir_edit.text(),
+            output_dir=self._output_dir,
             initial_prompt=self.prompt_edit.toPlainText().strip(),
             no_condition_prev=self.no_prev_check.isChecked(),
             dedupe=self.dedupe_check.isChecked(),
