@@ -1,4 +1,5 @@
 """메인 창의 대기 큐, 워커 인자 구성, 메시지 처리 검사 (워커 프로세스는 실제로 띄우지 않음)."""
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -56,6 +57,68 @@ class MainWindowTest(unittest.TestCase):
         self.assertNotIn("--preprocess", args)
         self.assertIn("--paragraph-gap=1.5", args)
         self.assertIn("--no-txt-timestamps", args)
+        self.assertNotIn("--correct", args)
+
+    def test_correct_arguments(self) -> None:
+        self.win.settings = Settings(correct=True, llm_model="llm/x")
+        self.win._add_files([Path("/x/lec.m4a")])
+        self.win._on_start()
+        args = self.win.process.arguments()
+        self.assertIn("--correct", args)
+        self.assertIn("--llm-model=llm/x", args)
+
+    def test_llm_phase_messages(self) -> None:
+        self.win._add_files([Path("/a.mp3")])
+        self.win._on_start()
+        self.win._handle_message({"type": "phase", "label": "교정"})
+        self.win._handle_message({"type": "llm_progress", "current": 1, "total": 4})
+        self.assertEqual(self.win.progress_bar.value(), 25)
+        self.win._tick_elapsed()
+        self.assertIn("교정 중 1/4", self.win.status_label.text())
+        self.win._handle_message({"type": "notice", "message": "원문을 유지했습니다."})
+        self.assertIn("원문을 유지했습니다.", self.win.log_view.toPlainText())
+
+    def test_pick_summary_source(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            files = [str(Path(d, n)) for n in ("a.srt", "a.txt", "a.corrected.srt", "a.corrected.txt")]
+            for f in files[:3]:  # a.corrected.txt는 없는 파일
+                Path(f).write_text("x", encoding="utf-8")
+            self.assertEqual(mw.pick_summary_source(files), files[2])
+            self.assertIsNone(mw.pick_summary_source([str(Path(d, "nope.txt"))]))
+
+    def test_summary_runs_on_done_item(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            txt = str(Path(d, "lec.txt"))
+            Path(txt).write_text("본문", encoding="utf-8")
+            self.win.settings = Settings(llm_model="llm/x")
+            self.win._add_files([Path("/x/lec.m4a")])
+            self.win._on_start()
+            self.win._handle_message({"type": "done", "output_files": [txt]})
+            self.win._on_finished(0, QProcess.NormalExit)
+            item = self.win._queue_items()[0]
+
+            self.win._start_summary(item)
+            self.assertEqual(self.statuses(), ["summarizing"])
+            self.assertFalse(self.win.start_btn.isEnabled())
+            args = self.win.process.arguments()
+            for expected in (["--summarize", txt], ["--audio", "/x/lec.m4a"], ["--outdir", d]):
+                i = args.index(expected[0])
+                self.assertEqual(args[i:i + 2], expected)
+            self.assertIn("--llm-model=llm/x", args)
+            # 요약 결과 파일은 요약 원본 목록에 섞이지 않는다
+            self.win._handle_message({"type": "done", "output_files": [str(Path(d, "lec.summary.md"))]})
+            self.assertEqual(item.data(mw.OUTPUT_ROLE), [txt])
+            self.win._on_finished(0, QProcess.NormalExit)
+            self.assertEqual(self.statuses(), ["done"])
+            self.assertEqual(self.win.status_label.text(), "요약 완료")
+
+    def test_summary_without_files_warns(self) -> None:
+        self.win._add_files([Path("/a.mp3")])
+        item = self.win._queue_items()[0]
+        self.win._set_status(item, "done")
+        self.win._start_summary(item)
+        mw.QMessageBox.warning.assert_called_once()
+        self.assertIsNone(self.win.process)
 
     def test_empty_output_dir_uses_audio_folder(self) -> None:
         self.win.settings = Settings(output_dir="")

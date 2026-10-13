@@ -6,7 +6,7 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, Qt, QTimer
+from PySide6.QtCore import QPoint, QProcess, Qt, QTimer
 from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -50,7 +51,20 @@ VOICE_MEMOS_DIR = (
 
 PATH_ROLE = Qt.UserRole
 STATUS_ROLE = Qt.UserRole + 1
-STATUS_PREFIX = {"pending": "대기", "running": "진행", "done": "완료", "failed": "실패"}
+OUTPUT_ROLE = Qt.UserRole + 2  # 워커가 저장한 결과 파일 경로 목록 (요약 원본 선택용)
+STATUS_PREFIX = {
+    "pending": "대기",
+    "running": "진행",
+    "summarizing": "요약",
+    "done": "완료",
+    "failed": "실패",
+}
+# 요약 원본으로 쓸 결과 파일 우선순위: 교정본 > 원본, 문단형(TXT/MD) > 자막형
+SUMMARY_SOURCE_SUFFIXES = [
+    ".corrected.txt", ".corrected.md", ".corrected.vtt", ".corrected.srt",
+    ".txt", ".md", ".vtt", ".srt",
+]
+WORKER_SCRIPT = str(Path(__file__).parent / "transcribe_worker.py")
 
 
 def format_hms(seconds: float) -> str:
@@ -60,6 +74,15 @@ def format_hms(seconds: float) -> str:
     if h:
         return f"{h:02d}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
+
+
+def pick_summary_source(files: list[str]) -> str | None:
+    """결과 파일 중 요약에 쓸 파일 하나를 우선순위대로 고른다. 지금 없는 파일은 건너뛴다."""
+    for suffix in SUMMARY_SOURCE_SUFFIXES:
+        for f in files:
+            if f.endswith(suffix) and Path(f).is_file():
+                return f
+    return None
 
 
 class MainWindow(QMainWindow):
@@ -81,6 +104,8 @@ class MainWindow(QMainWindow):
         self._elapsed_timer.setInterval(1000)
         self._elapsed_timer.timeout.connect(self._tick_elapsed)
         self._start_time: float = 0.0
+        self._job = "transcribe"  # 현재 워커 작업: "transcribe" | "summary"
+        self._phase = ""  # LLM 단계 이름 ("교정"/"요약"). 비어 있으면 전사 단계
 
         self._build_ui()
         self._build_menu()
@@ -96,6 +121,8 @@ class MainWindow(QMainWindow):
         self.queue_list = QListWidget()
         self.queue_list.setSelectionMode(QListWidget.ExtendedSelection)
         self.queue_list.setMaximumHeight(120)
+        self.queue_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.queue_list.customContextMenuRequested.connect(self._on_queue_menu)
         file_btn_layout = QVBoxLayout()
         browse_btn = QPushButton("파일 추가")
         browse_btn.clicked.connect(self._on_browse)
@@ -271,12 +298,9 @@ class MainWindow(QMainWindow):
         self._log(f"\n===== {self._queue_position()}파일: {audio_path}")
         self._log(f"모델: {model_repo} / 언어: {language} / 형식: {', '.join(formats)}")
 
-        worker_script = str(Path(__file__).parent / "transcribe_worker.py")
-        self.process = QProcess(self)
-        self.process.setProgram(sys.executable)
-        self.process.setArguments(
+        self._job = "transcribe"
+        self._launch(
             [
-                worker_script,
                 "--audio",
                 str(audio_path),
                 "--model",
@@ -296,19 +320,65 @@ class MainWindow(QMainWindow):
             + (["--preprocess"] if settings.preprocess else [])
             + [f"--paragraph-gap={settings.paragraph_gap}"]
             + ([] if settings.txt_timestamps else ["--no-txt-timestamps"])
+            + (["--correct", f"--llm-model={settings.llm_model}"] if settings.correct else [])
         )
+
+    def _launch(self, worker_args: list[str]) -> None:
+        """워커 프로세스를 띄우고 진행 표시를 초기화한다."""
+        self.process = QProcess(self)
+        self.process.setProgram(sys.executable)
+        self.process.setArguments([WORKER_SCRIPT] + worker_args)
         self.process.readyReadStandardOutput.connect(self._on_stdout)
         self.process.readyReadStandardError.connect(self._on_stderr)
         self.process.finished.connect(self._on_finished)
         self.process.errorOccurred.connect(self._on_process_error)
 
         self.start_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self._phase = ""
         self._progress_current = 0.0
         self._progress_total = None
         self._start_time = time.monotonic()
         self._elapsed_timer.start()
 
         self.process.start()
+
+    # ---------- 요약 (완료 항목 우클릭) ----------
+    def _on_queue_menu(self, pos: QPoint) -> None:
+        item = self.queue_list.itemAt(pos)
+        if item is None or item.data(STATUS_ROLE) != "done":
+            return
+        menu = QMenu(self)
+        action = menu.addAction("요약 만들기")
+        action.setEnabled(not self._is_running())
+        if menu.exec(self.queue_list.viewport().mapToGlobal(pos)) == action:
+            self._start_summary(item)
+
+    def _start_summary(self, item: QListWidgetItem) -> None:
+        source = pick_summary_source(item.data(OUTPUT_ROLE) or [])
+        if source is None:
+            QMessageBox.warning(self, "요약 불가", "요약할 전사 결과 파일을 찾을 수 없습니다.")
+            return
+        audio_path: Path = item.data(PATH_ROLE)
+        self.output_dir = Path(source).parent
+        self.current_item = item
+        self._set_status(item, "summarizing")
+        self.progress_bar.setValue(0)
+        self.status_label.setText("요약 모델 로딩 중... (최초 실행 시 다운로드로 시간이 걸릴 수 있습니다)")
+        self._log(f"\n===== 요약: {source}")
+        self._log(f"LLM 모델: {self.settings.llm_model}")
+        self._job = "summary"
+        self._launch(
+            [
+                "--summarize",
+                source,
+                "--audio",
+                str(audio_path),
+                "--outdir",
+                str(self.output_dir),
+                f"--llm-model={self.settings.llm_model}",
+            ]
+        )
 
     def _on_cancel(self) -> None:
         # 현재 파일은 중단 후 '대기'로 되돌리고, 나머지 큐는 그대로 둔다
@@ -324,6 +394,13 @@ class MainWindow(QMainWindow):
 
     def _tick_elapsed(self) -> None:
         elapsed = time.monotonic() - self._start_time
+        if self._phase:
+            # LLM 단계: 진행 단위가 오디오 초가 아니라 묶음 수
+            done = f" {int(self._progress_current)}/{self._progress_total}" if self._progress_total else ""
+            self.status_label.setText(
+                f"{self._queue_position()}{self._phase} 중{done}... (경과 {format_hms(elapsed)})"
+            )
+            return
         text = f"{self._queue_position()}처리 중... (경과 {format_hms(elapsed)}"
         if self._progress_total and self._progress_current > 0 and elapsed > 1:
             speed = self._progress_current / elapsed  # 오디오 초 / 실제 초
@@ -374,18 +451,49 @@ class MainWindow(QMainWindow):
             if total:
                 pct = max(0, min(100, int(current / total * 100)))
                 self.progress_bar.setValue(pct)
+        elif msg_type == "phase":
+            self._phase = obj.get("label", "")
+            self._progress_current, self._progress_total = 0.0, None
+            self.progress_bar.setValue(0)
+            self._log(f"{self._phase} 시작 (LLM 모델 로딩 — 최초 실행 시 다운로드로 시간이 걸릴 수 있습니다)")
+        elif msg_type == "llm_progress":
+            current, total = obj.get("current", 0), obj.get("total", 0)
+            self._progress_current, self._progress_total = current, total
+            if total:
+                self.progress_bar.setValue(max(0, min(100, int(current / total * 100))))
+        elif msg_type == "notice":
+            self._log(obj.get("message", ""))
         elif msg_type == "error":
             self._log("[오류] " + obj.get("message", ""))
         elif msg_type == "done":
             self.progress_bar.setValue(100)
-            self._log("전사 완료.")
-            for f in obj.get("output_files", []):
+            self._log("요약 완료." if self._job == "summary" else "전사 완료.")
+            files = obj.get("output_files", [])
+            if self._job == "transcribe" and self.current_item is not None:
+                self.current_item.setData(OUTPUT_ROLE, files)
+            for f in files:
                 self._log(f"저장됨: {f}")
 
     def _on_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
         self._elapsed_timer.stop()
         item, self.current_item = self.current_item, None
         if item is None:
+            return
+        if self._job == "summary":
+            # 요약은 큐와 별개: 성공·실패·취소 모두 항목을 '완료'로 되돌린다
+            self._set_status(item, "done")
+            if self._cancelled:
+                self._log("취소됨.")
+                self.status_label.setText("취소됨")
+            elif exit_code == 0 and exit_status == QProcess.NormalExit:
+                self.status_label.setText("요약 완료")
+                self.open_folder_btn.setEnabled(True)
+            else:
+                self.status_label.setText("요약 실패")
+                self._log("[오류] 요약에 실패했습니다.")
+            self._cancelled = False
+            self.cancel_btn.setEnabled(False)
+            self._update_start_btn()
             return
         if self._cancelled:
             self._set_status(item, "pending")

@@ -5,9 +5,15 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Callable
+from unittest import mock
 
 from sttgui.transcribe_worker import (
     VerboseLineCapture,
+    chunk_by_tokens,
+    correct_segments,
+    parse_numbered_lines,
+    read_transcript,
+    summarize_text,
     dedupe_segments,
     format_hms_timestamp,
     format_srt_timestamp,
@@ -156,6 +162,75 @@ class WriterTest(unittest.TestCase):
     def test_vtt(self) -> None:
         out = render(write_vtt, self.SEGS[:1], ext="vtt")
         self.assertEqual(out, "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nA\n\n")
+
+
+def char_count(text: str) -> int:
+    return len(text)
+
+
+class LlmCorrectTest(unittest.TestCase):
+    def test_chunk_by_tokens(self) -> None:
+        self.assertEqual(chunk_by_tokens(["aa", "bb", "cc", "d"], 4, char_count), [[0, 1], [2, 3]])
+        # 한도보다 긴 줄은 단독 묶음
+        self.assertEqual(chunk_by_tokens(["aaaaaa", "b"], 4, char_count), [[0], [1]])
+        self.assertEqual(chunk_by_tokens([], 4, char_count), [])
+
+    def test_parse_numbered_lines(self) -> None:
+        self.assertEqual(parse_numbered_lines("2|둘\n1| 하나\n잡담", 2), ["하나", "둘"])
+        self.assertIsNone(parse_numbered_lines("1|하나", 2))  # 누락
+        self.assertIsNone(parse_numbered_lines("1|a\n2|b\n3|c", 2))  # 초과
+
+    def test_correct_keeps_timestamps_and_falls_back(self) -> None:
+        segments = [seg(0, 1, "퍼셉트론 이"), seg(1, 2, "임계치가"), seg(2, 3, "틀린말")]
+        calls: list[str] = []
+
+        def generate(system: str, user: str, max_tokens: int) -> str:
+            calls.append(user)
+            body = user.split("[교정할 줄]\n")[1].splitlines()
+            if "틀린말" in user:
+                return "1|어긋난 응답\n2|추가 줄"  # 줄 수 불일치 → 원문 유지
+            return "\n".join(f"{line.split('|')[0]}|{line.split('|')[1]}!" for line in body)
+
+        with mock.patch("sttgui.transcribe_worker.CORRECT_CHUNK_TOKENS", 12):
+            fixed, failed = correct_segments(segments, generate, char_count, glossary="퍼셉트론")
+        self.assertEqual([s["text"] for s in fixed], ["퍼셉트론 이!", "임계치가!", "틀린말"])
+        self.assertEqual([(s["start"], s["end"]) for s in fixed], [(0, 1), (1, 2), (2, 3)])
+        self.assertEqual(failed, 1)
+        self.assertEqual(segments[0]["text"], "퍼셉트론 이")  # 입력은 그대로
+        # 두 번째 묶음에는 앞 묶음의 교정된 문장이 문맥으로 들어간다
+        self.assertIn("[앞 문맥", calls[1])
+        self.assertIn("임계치가!", calls[1])
+
+    def test_empty_reply_line_keeps_original(self) -> None:
+        fixed, failed = correct_segments([seg(0, 1, "원문")], lambda *_: "1|", char_count)
+        self.assertEqual((fixed[0]["text"], failed), ("원문", 0))
+
+
+class LlmSummaryTest(unittest.TestCase):
+    def test_single_chunk(self) -> None:
+        out = summarize_text("가\n\n나", lambda s, u, n: f"요약({u})", char_count)
+        self.assertEqual(out, "요약(가\n나)")
+
+    def test_long_text_merged(self) -> None:
+        progress: list[tuple[int, int]] = []
+        with mock.patch("sttgui.transcribe_worker.SUMMARY_CHUNK_TOKENS", 1):
+            out = summarize_text(
+                "가\n나", lambda s, u, n: f"[{u}]", char_count, lambda c, t: progress.append((c, t))
+            )
+        self.assertEqual(out, "[[가]\n\n---\n\n[나]]")
+        self.assertEqual(progress, [(1, 3), (2, 3), (3, 3)])
+
+    def test_read_transcript_strips_markup(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            srt = Path(d) / "a.srt"
+            write_srt([seg(0, 1, "하나"), seg(1, 2, "둘")], srt)
+            self.assertEqual(read_transcript(srt), "하나\n둘")
+            md = Path(d) / "a.md"
+            write_md([seg(0, 1, "하나")], md)
+            self.assertEqual(read_transcript(md), "하나")
+            vtt = Path(d) / "a.vtt"
+            write_vtt([seg(0, 1, "하나")], vtt)
+            self.assertEqual(read_transcript(vtt), "하나")
 
 
 if __name__ == "__main__":

@@ -31,6 +31,8 @@ class SettingsTest(unittest.TestCase):
             preprocess=True,
             paragraph_gap=3.5,
             txt_timestamps=False,
+            correct=True,
+            llm_model="mlx-community/other-llm",
         )
         s.save()
         self.assertEqual(Settings.load(), s)
@@ -49,6 +51,8 @@ class SettingsTest(unittest.TestCase):
         self.assertIn("large-v3-turbo", text)
         self.assertIn("TXT, MD", text)
         self.assertIn("⌘,", text)
+        self.assertNotIn("LLM 교정", text)
+        self.assertIn("LLM 교정", Settings(correct=True).summary())
 
 
 class SettingsDialogTest(unittest.TestCase):
@@ -56,7 +60,8 @@ class SettingsDialogTest(unittest.TestCase):
         qt_app()
 
     def test_dialog_reflects_and_returns_settings(self) -> None:
-        s = Settings(language="en", formats=["srt", "md"], initial_prompt="용어", paragraph_gap=4.0)
+        s = Settings(language="en", formats=["srt", "md"], initial_prompt="용어", paragraph_gap=4.0,
+                     correct=True, llm_model="직접/입력한-모델")
         self.assertEqual(SettingsDialog(s).settings(), s)
 
     def test_dialog_edits(self) -> None:
@@ -66,7 +71,11 @@ class SettingsDialogTest(unittest.TestCase):
         dlg.preprocess_check.setChecked(True)
         dlg.format_checks["md"].setChecked(True)
         dlg.gap_spin.setValue(1.5)
+        dlg.correct_check.setChecked(True)
+        dlg.llm_combo.setCurrentText("  ")  # 비우면 기본 모델
         out = dlg.settings()
+        self.assertTrue(out.correct)
+        self.assertEqual(out.llm_model, Settings().llm_model)
         self.assertFalse(out.dedupe)
         self.assertFalse(out.skip_silence)
         self.assertTrue(out.preprocess)

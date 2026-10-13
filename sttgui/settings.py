@@ -46,6 +46,9 @@ LANGUAGE_OPTIONS = [
     ("영어", "en"),
 ]
 
+# 교정·요약용 mlx-lm 모델 (콤보박스에서 직접 입력도 가능)
+LLM_MODEL_OPTIONS = ["mlx-community/Qwen3.5-9B-MLX-4bit"]
+
 FORMAT_OPTIONS = [("TXT", "txt"), ("SRT", "srt"), ("VTT", "vtt"), ("Markdown", "md")]
 DEFAULT_FORMATS = ["txt", "srt", "vtt"]  # Markdown은 기본 꺼짐
 
@@ -63,6 +66,8 @@ class Settings:
     preprocess: bool = False  # ffmpeg 잡음 제거·음량 정규화 후 전사
     paragraph_gap: float = 2.0  # TXT/MD 문단을 나누는 무음 간격(초)
     txt_timestamps: bool = True  # TXT 문단 앞에 [HH:MM:SS] 표시
+    correct: bool = False  # 전사 후 로컬 LLM으로 원문 교정 (.corrected 파일 추가 저장)
+    llm_model: str = LLM_MODEL_OPTIONS[0]  # 교정·요약에 쓸 mlx-lm 모델
 
     @classmethod
     def load(cls) -> Settings:
@@ -90,7 +95,8 @@ class Settings:
         lang = next((l for l, c in LANGUAGE_OPTIONS if c == self.language), self.language)
         fmts = ", ".join(f.upper() for f in self.formats)
         outdir = self.output_dir.replace(str(Path.home()), "~", 1) or "원본 파일 폴더"
-        return f"모델: {model.split(' (')[0]} · {lang} · {fmts} · 저장: {outdir} — ⌘, 로 변경"
+        correct = " · LLM 교정" if self.correct else ""
+        return f"모델: {model.split(' (')[0]} · {lang} · {fmts}{correct} · 저장: {outdir} — ⌘, 로 변경"
 
 
 class SettingsDialog(QDialog):
@@ -184,6 +190,27 @@ class SettingsDialog(QDialog):
         out_form.addRow("", self.txt_ts_check)
         layout.addWidget(out_group)
 
+        # LLM 후처리
+        llm_group = QGroupBox("LLM 후처리")
+        llm_form = QFormLayout(llm_group)
+        self.correct_check = QCheckBox("전사 후 LLM으로 원문 교정")
+        self.correct_check.setChecked(settings.correct)
+        self.correct_check.setToolTip(
+            "전사가 끝나면 로컬 LLM이 잘못 인식된 단어·맞춤법·띄어쓰기를 고칩니다.\n"
+            "원본은 그대로 두고 '<이름>.corrected.<형식>' 파일을 따로 저장합니다.\n"
+            "최초 실행 시 모델을 내려받으며(약 6GB), 강의 1시간당 수 분~10여 분이 더 걸립니다."
+        )
+        llm_form.addRow("", self.correct_check)
+        self.llm_combo = QComboBox()
+        self.llm_combo.setEditable(True)
+        self.llm_combo.addItems(LLM_MODEL_OPTIONS)
+        self.llm_combo.setCurrentText(settings.llm_model)
+        self.llm_combo.setToolTip(
+            "Hugging Face의 mlx-lm 모델 이름. 교정과 요약(완료 항목 우클릭 → 요약 만들기)에 씁니다."
+        )
+        llm_form.addRow("LLM 모델:", self.llm_combo)
+        layout.addWidget(llm_group)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -215,4 +242,6 @@ class SettingsDialog(QDialog):
             preprocess=self.preprocess_check.isChecked(),
             paragraph_gap=self.gap_spin.value(),
             txt_timestamps=self.txt_ts_check.isChecked(),
+            correct=self.correct_check.isChecked(),
+            llm_model=self.llm_combo.currentText().strip() or LLM_MODEL_OPTIONS[0],
         )
