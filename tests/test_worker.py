@@ -11,6 +11,7 @@ from sttgui.transcribe_worker import (
     VerboseLineCapture,
     chunk_by_tokens,
     correct_segments,
+    keep_original_spacing,
     parse_numbered_lines,
     read_transcript,
     summarize_text,
@@ -200,6 +201,16 @@ class LlmCorrectTest(unittest.TestCase):
         # 두 번째 묶음에는 앞 묶음의 교정된 문장이 문맥으로 들어간다
         self.assertIn("[앞 문맥", calls[1])
         self.assertIn("임계치가!", calls[1])
+
+    def test_keep_original_spacing(self) -> None:
+        # 띄어쓰기만 바뀐 줄은 원문 그대로
+        self.assertEqual(keep_original_spacing("0.1이 나오고 true가", "0.1 이 나오고 true 가"), "0.1이 나오고 true가")
+        # 바뀐 글자는 받아들이고, 나머지는 원문 띄어쓰기
+        self.assertEqual(
+            keep_original_spacing("방점식을 풀 때 W를", "방정식을 풀 때 W 를"), "방정식을 풀 때 W를"
+        )
+        self.assertEqual(keep_original_spacing("오아함수가 되죠", "OR 함수가 되죠"), "OR 함수가 되죠")
+        self.assertEqual(keep_original_spacing("", "새 문장"), "새 문장")
 
     def test_empty_reply_line_keeps_original(self) -> None:
         fixed, failed = correct_segments([seg(0, 1, "원문")], lambda *_: "1|", char_count)

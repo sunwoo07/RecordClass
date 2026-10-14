@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import difflib
 import io
 import json
 import os
@@ -251,9 +252,11 @@ SUMMARY_MAX_TOKENS = 4096
 NUMBERED_RE = re.compile(r"^\s*(\d+)\s*\|\s?(.*)$")
 THINK_RE = re.compile(r"<think>.*?</think>", re.S)
 
-CORRECT_SYSTEM = """너는 한국어 강의 음성 인식(STT) 결과를 교정한다.
-- 잘못 인식된 단어, 맞춤법, 띄어쓰기, 문장 부호만 고친다.
-- 내용을 추가·삭제·요약·의역하지 않는다. 구어체 말투도 그대로 둔다.
+CORRECT_SYSTEM = """너는 한국어 강의 음성 인식(STT) 결과에서 잘못 인식된 단어만 고친다.
+- 발음이 비슷해 잘못 적힌 단어(예: 방점식→방정식, 오아 함수→OR 함수)와 명백한 오타만 고친다.
+- 확실하지 않으면 원문을 그대로 둔다. 추측해서 바꾸지 않는다.
+- 단어를 추가·삭제하거나 순서를 바꾸지 않는다. 요약·의역하지 않고 구어체 말투도 그대로 둔다.
+- 띄어쓰기는 바꾸지 않는다. 숫자·영문 뒤 조사는 붙여 쓴다(예: 0.1이, true가).
 - 입력의 각 줄은 '번호|문장' 형식이다. 같은 번호, 같은 줄 수로 '번호|교정한 문장'만 출력하고 다른 말은 쓰지 않는다."""
 
 SUMMARY_SYSTEM = """너는 한국어 대학 강의 전사본을 강의 노트로 정리한다.
@@ -302,6 +305,38 @@ def parse_numbered_lines(reply: str, expected: int) -> list[str] | None:
     return [found[i] for i in range(1, expected + 1)]
 
 
+def keep_original_spacing(original: str, corrected: str) -> str:
+    """교정문에서 원문과 글자가 같은 구간은 원문의 띄어쓰기를 되살린다.
+
+    LLM이 '0.1이'를 '0.1 이'로 떼는 식으로 띄어쓰기를 망치는 경향이 있어서,
+    공백을 뺀 글자끼리 비교해 실제로 바뀐 글자 구간만 교정문의 띄어쓰기를 따른다.
+    """
+
+    def split(text: str) -> tuple[str, set[int]]:
+        # 공백을 뺀 글자열과, 뒤에 공백이 오는 글자의 위치
+        chars: list[str] = []
+        space_after: set[int] = set()
+        for ch in text.strip():
+            if ch.isspace():
+                if chars:
+                    space_after.add(len(chars) - 1)
+            else:
+                chars.append(ch)
+        return "".join(chars), space_after
+
+    old, old_spaces = split(original)
+    new, new_spaces = split(corrected)
+    out: list[str] = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+        chars, spaces, start = (old, old_spaces, i1) if tag == "equal" else (new, new_spaces, j1)
+        end = i2 if tag == "equal" else j2
+        for k in range(start, end):
+            out.append(chars[k])
+            if k in spaces:
+                out.append(" ")
+    return "".join(out).strip()
+
+
 def correct_segments(
     segments: list[Segment],
     generate: Generate,
@@ -334,7 +369,7 @@ def correct_segments(
         else:
             for i, line in zip(idx, lines):
                 if line:
-                    fixed[i] = line
+                    fixed[i] = keep_original_spacing(texts[i], line)
         if on_progress:
             on_progress(n, len(chunks))
     return [{**seg, "text": text} for seg, text in zip(segments, fixed)], failed
